@@ -1,0 +1,150 @@
+:root {
+  font-family: system-ui, 'Segoe UI', 'Yu Gothic UI', sans-serif;
+  color: #1f2430;
+  background: #f4f5f8;
+}
+body {
+  margin: 0;
+}
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+h1 {
+  margin: 0 0 4px;
+  font-size: 1.6rem;
+}
+h2 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+h2 small {
+  font-weight: normal;
+  color: #667;
+}
+header p {
+  margin: 4px 0;
+}
+.panel {
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+.check {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding-bottom: 6px;
+}
+select,
+button {
+  font: inherit;
+  padding: 6px 12px;
+}
+button {
+  background: #3b5bdb;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+button:disabled {
+  background: #aab;
+  cursor: not-allowed;
+}
+.badge {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #e7ebf5;
+}
+.engine-ready {
+  background: #dff5e3;
+}
+.engine-failed,
+.error {
+  background: #fde2e2;
+  color: #8a1c1c;
+}
+.busy,
+.warn {
+  background: #fff3cd;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.frame,
+.compare {
+  background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 16px 16px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+.frame img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 0 auto;
+}
+.placeholder {
+  color: #889;
+  text-align: center;
+  padding: 40px 0;
+}
+.compare {
+  position: relative;
+  overflow: hidden;
+  background-color: #fff;
+}
+.compare img {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+}
+.compare .over {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+.compare .handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #3b5bdb;
+  pointer-events: none;
+}
+.slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+@media (max-width: 720px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
