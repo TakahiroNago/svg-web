@@ -4,11 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/sync-wasm.mjs && vite",
-    "build": "node scripts/sync-wasm.mjs && tsc -b && vite build",
-    "lint": "oxlint",
-    "preview": "vite preview",
-    "sync:wasm": "node scripts/sync-wasm.mjs"
+		"dev": "vite",
+		"build": "tsc -b && vite build",
+		"lint": "oxlint",
+		"preview": "vite preview",
+		"sync:wasm": "node scripts/sync-wasm.mjs"
   },
   "dependencies": {
     "react": "^19.3.1",
