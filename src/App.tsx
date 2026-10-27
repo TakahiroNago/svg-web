@@ -3,6 +3,7 @@ import './App.css'
 import { decodeImage } from './converter/decode.ts'
 import { COLOR_OPTIONS, DEFAULT_COLORS, validateFile } from './converter/limits.ts'
 import { useConverter } from './converter/useConverter.ts'
+import type { PaletteColor } from './wasm/svg-converter.js'
 
 type Status = 'idle' | 'decoding' | 'converting' | 'done' | 'error'
 
@@ -21,7 +22,7 @@ function useObjectUrl(blob: Blob | null): string | null {
 }
 
 export default function App() {
-  const { engine, engineError, convert } = useConverter()
+  const { engine, engineError, analyze, generate } = useConverter()
   const [file, setFile] = useState<File | null>(null)
   const [colors, setColors] = useState<number>(DEFAULT_COLORS)
   const [boundary, setBoundary] = useState(false)
@@ -31,7 +32,11 @@ export default function App() {
   const [contours, setContours] = useState(0)
   const [split, setSplit] = useState(50)
   const [stale, setStale] = useState(false)
+  const [palette, setPalette] = useState<PaletteColor[]>([])
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [analyzedColors, setAnalyzedColors] = useState(0)
   const runId = useRef(0)
+  const markStale = () => svgBlob && setStale(true)
 
   const originalUrl = useObjectUrl(file)
   // The SVG is shown through <img>, so scripts inside it never run and it never enters the DOM.
@@ -40,6 +45,8 @@ export default function App() {
   const onFile = (f: File | undefined) => {
     runId.current++
     setSvgBlob(null)
+    setPalette([])
+    setSelected(new Set())
     setStale(false)
     setStatus('idle')
     if (!f) {
@@ -66,8 +73,14 @@ export default function App() {
       const img = await decodeImage(file)
       if (id !== runId.current) return
       setStatus('converting')
-      const out = await convert(img.rgba, img.width, img.height, colors, boundary)
+      const pal = await analyze(img.rgba, img.width, img.height, colors)
       if (id !== runId.current) return
+      const all = pal.filter((c) => c.area > 0)
+      const out = await generate(all.map((c) => c.index), boundary)
+      if (id !== runId.current) return
+      setPalette(all)
+      setSelected(new Set(all.map((c) => c.index)))
+      setAnalyzedColors(colors)
       setSvgBlob(new Blob([out.svg], { type: 'image/svg+xml' }))
       setContours(out.contourCount)
       setStale(false)
@@ -75,14 +88,44 @@ export default function App() {
     } catch (e) {
       if (id !== runId.current) return
       setSvgBlob(null)
+      setPalette([])
       setError((e as Error).message)
       setStatus('error')
     }
-  }, [file, colors, boundary, convert])
+  }, [file, colors, boundary, analyze, generate])
+
+  const regenerate = useCallback(async () => {
+    const id = ++runId.current
+    setError('')
+    setStatus('converting')
+    try {
+      const kept = palette.filter((c) => selected.has(c.index)).map((c) => c.index)
+      const out = await generate(kept, boundary)
+      if (id !== runId.current) return
+      setSvgBlob(new Blob([out.svg], { type: 'image/svg+xml' }))
+      setContours(out.contourCount)
+      setStale(false)
+      setStatus('done')
+    } catch (e) {
+      if (id !== runId.current) return
+      setError((e as Error).message)
+      setStatus('error')
+    }
+  }, [palette, selected, boundary, generate])
+
+  const toggleColor = (index: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(index)) next.add(index)
+      return next
+    })
+    markStale()
+  }
 
   const busy = status === 'decoding' || status === 'converting'
   const canRun = !!file && engine === 'ready' && !busy
-  const markStale = () => svgBlob && setStale(true)
+  const canRegenerate =
+    canRun && palette.length > 0 && selected.size > 0 && analyzedColors === colors
 
   const download = () => {
     if (!svgUrl || !file) return
@@ -155,7 +198,45 @@ export default function App() {
           エラー: {error}
         </p>
       )}
-      {stale && <p className="badge warn">設定が変更されました。「変換する」で再変換してください。</p>}
+      {stale && <p className="badge warn">設定が変更されました。「再変換」(色数変更時は「変換する」)を押してください。</p>}
+
+      {palette.length > 0 && (
+        <section className="panel">
+          <h2>使用する色</h2>
+          <ul className="palette">
+            {palette.map((c) => (
+              <li key={c.index}>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(c.index)}
+                    onChange={() => toggleColor(c.index)}
+                  />
+                  <span
+                    className="swatch"
+                    style={{
+                      display: 'inline-block',
+                      width: '1.2em',
+                      height: '1.2em',
+                      background: c.hex,
+                      border: '1px solid #888',
+                    }}
+                  />
+                  <span>
+                    {c.hex} ({((c.area / palette.reduce((s, p) => s + p.area, 0)) * 100).toFixed(1)}%)
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <button type="button" onClick={regenerate} disabled={!canRegenerate}>
+            再変換
+          </button>
+          {analyzedColors !== colors && (
+            <p className="badge warn">色数を変更した場合は「変換する」で再解析してください。</p>
+          )}
+        </section>
+      )}
 
       <div className="grid">
         <section className="panel">

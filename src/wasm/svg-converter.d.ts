@@ -5,7 +5,31 @@ export interface ConvertResult {
   error: string
 }
 
+export interface PaletteColor {
+  index: number
+  hex: string
+  area: number
+}
+
+export interface AnalyzeResult {
+  success: boolean
+  palette: PaletteColor[]
+  error: string
+}
+
+export interface SvgSession {
+  analyze(
+    rgba: Uint8Array | Uint8ClampedArray,
+    width: number,
+    height: number,
+    colorCount: number,
+  ): AnalyzeResult
+  generate(keptColors: number[], boundary: boolean): ConvertResult
+  delete(): void
+}
+
 export interface SvgConverterModule {
+  SvgSession: new () => SvgSession
   convertImage(
     rgba: Uint8Array | Uint8ClampedArray,
     width: number,
