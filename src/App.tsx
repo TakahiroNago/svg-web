@@ -7,6 +7,75 @@ import type { PaletteColor } from './wasm/svg-converter.js'
 
 type Status = 'idle' | 'decoding' | 'converting' | 'done' | 'error'
 
+type View = { scale: number; x: number; y: number }
+const INITIAL_VIEW: View = { scale: 1, x: 0, y: 0 }
+const MIN_SCALE = 1
+const MAX_SCALE = 64
+
+// Both frames have the same size, so a shared pixel-based view keeps them in sync.
+function ZoomFrame({
+  src,
+  alt,
+  view,
+  setView,
+}: {
+  src: string
+  alt: string
+  view: View
+  setView: React.Dispatch<React.SetStateAction<View>>
+}) {
+  const frameRef = useRef<HTMLDivElement>(null)
+  const drag = useRef<{ px: number; py: number } | null>(null)
+
+  useEffect(() => {
+    const el = frameRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const cx = e.clientX - rect.left
+      const cy = e.clientY - rect.top
+      setView((v) => {
+        const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, v.scale * Math.exp(-e.deltaY * 0.002)))
+        if (scale === MIN_SCALE) return INITIAL_VIEW
+        const k = scale / v.scale
+        return { scale, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k }
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [setView])
+
+  return (
+    <div
+      ref={frameRef}
+      className="frame zoom-frame"
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId)
+        drag.current = { px: e.clientX, py: e.clientY }
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current
+        if (!d) return
+        const dx = e.clientX - d.px
+        const dy = e.clientY - d.py
+        drag.current = { px: e.clientX, py: e.clientY }
+        setView((v) => (v.scale === MIN_SCALE ? v : { ...v, x: v.x + dx, y: v.y + dy }))
+      }}
+      onPointerUp={() => (drag.current = null)}
+      onPointerCancel={() => (drag.current = null)}
+      onDoubleClick={() => setView(INITIAL_VIEW)}
+    >
+      <img
+        src={src}
+        alt={alt}
+        draggable={false}
+        style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
+      />
+    </div>
+  )
+}
+
 function useObjectUrl(blob: Blob | null): string | null {
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
@@ -32,6 +101,8 @@ export default function App() {
   const [contours, setContours] = useState(0)
   const [split, setSplit] = useState(50)
   const [stale, setStale] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [view, setView] = useState<View>(INITIAL_VIEW)
   const [palette, setPalette] = useState<PaletteColor[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [analyzedColors, setAnalyzedColors] = useState(0)
@@ -45,6 +116,7 @@ export default function App() {
   const onFile = (f: File | undefined) => {
     runId.current++
     setSvgBlob(null)
+    setView(INITIAL_VIEW)
     setPalette([])
     setSelected(new Set())
     setStale(false)
@@ -212,19 +284,7 @@ export default function App() {
                     checked={selected.has(c.index)}
                     onChange={() => toggleColor(c.index)}
                   />
-                  <span
-                    className="swatch"
-                    style={{
-                      display: 'inline-block',
-                      width: '1.2em',
-                      height: '1.2em',
-                      background: c.hex,
-                      border: '1px solid #888',
-                    }}
-                  />
-                  <span>
-                    {c.hex} ({((c.area / palette.reduce((s, p) => s + p.area, 0)) * 100).toFixed(1)}%)
-                  </span>
+                  <span className="swatch" style={{ background: c.hex }} title={c.hex} />
                 </label>
               </li>
             ))}
@@ -239,14 +299,26 @@ export default function App() {
       )}
 
       <div className="grid">
-        <section className="panel">
+        <section
+          className={`panel${dragging ? ' dragging' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault()
+            setDragging(true)
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDragging(false)
+            onFile(e.dataTransfer.files[0])
+          }}
+        >
           <h2>元画像</h2>
           {originalUrl ? (
-            <div className="frame">
-              <img src={originalUrl} alt="選択した元画像" />
-            </div>
+            <ZoomFrame src={originalUrl} alt="選択した元画像" view={view} setView={setView} />
           ) : (
-            <p className="placeholder">画像を選択してください</p>
+            <p className="placeholder">画像を選択、またはここにドラッグ&ドロップしてください</p>
           )}
         </section>
 
@@ -257,11 +329,12 @@ export default function App() {
           </h2>
           {svgUrl ? (
             <>
-              <div className="frame">
-                <img src={svgUrl} alt="変換後の SVG" />
-              </div>
+              <ZoomFrame src={svgUrl} alt="変換後の SVG" view={view} setView={setView} />
               <button type="button" onClick={download}>
                 SVG をダウンロード
+              </button>{' '}
+              <button type="button" onClick={() => setView(INITIAL_VIEW)}>
+                表示をリセット
               </button>
             </>
           ) : (
