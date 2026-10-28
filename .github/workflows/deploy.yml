@@ -1,0 +1,62 @@
+﻿name: Deploy SVG Web to AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: svg-web-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        run: |
+          set -eu
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE'
+          set -eu
+
+          cd "$HOME/apps/svg-web"
+
+          git fetch origin main
+          git switch main
+          git pull --ff-only origin main
+
+          docker compose build web
+          docker compose up -d --no-deps --force-recreate web
+
+          curl -fsS http://127.0.0.1:8081/ > /dev/null
+          curl -fsS https://aws-svg.art-full-stack.com/ > /dev/null
+
+          echo "Deployment successful"
+          REMOTE
+
+          rm -f ~/.ssh/deploy_key
