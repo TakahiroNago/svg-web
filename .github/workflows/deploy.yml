@@ -1,4 +1,4 @@
-﻿name: Deploy SVG Web to AWS
+name: Deploy SVG Web to AWS
 
 on:
   push:
@@ -16,47 +16,69 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Deploy to EC2
+      - name: Verify AWS credentials
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-southeast-2
+        run: |
+          set -eu
+          aws sts get-caller-identity
+
+      - name: Deploy to EC2 through SSM
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-southeast-2
         run: |
           set -eu
 
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          INSTANCE_ID="i-0f21053ec32e7d409"
 
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          COMMAND_ID=$(aws ssm send-command \
+            --region "$AWS_DEFAULT_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["set -eu","cd /home/ubuntu/apps/svg-web","git fetch origin main","git switch main","git pull --ff-only origin main","docker compose build web","docker compose up -d --no-deps --force-recreate web","curl -fsS http://127.0.0.1:8081/ > /dev/null","curl -fsS https://aws-svg.art-full-stack.com/ > /dev/null","echo Deployment successful"]' \
+            --query 'Command.CommandId' \
+            --output text)
 
-          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
+          echo "SSM command ID: $COMMAND_ID"
 
-          ssh \
-            -i ~/.ssh/deploy_key \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
-            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE'
-          set -eu
+          for attempt in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "$AWS_DEFAULT_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)
 
-          cd "$HOME/apps/svg-web"
+            case "$STATUS" in
+              Success)
+                echo "Deployment successful"
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut|Cancelling)
+                aws ssm get-command-invocation \
+                  --region "$AWS_DEFAULT_REGION" \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+                  --output json || true
+                exit 1
+                ;;
+              *)
+                sleep 5
+                ;;
+            esac
+          done
 
-          git fetch origin main
-          git switch main
-          git pull --ff-only origin main
-
-          docker compose build web
-          docker compose up -d --no-deps --force-recreate web
-
-          curl -fsS http://127.0.0.1:8081/ > /dev/null
-          curl -fsS https://aws-svg.art-full-stack.com/ > /dev/null
-
-          echo "Deployment successful"
-          REMOTE
-
-          rm -f ~/.ssh/deploy_key
+          echo "Timed out waiting for SSM command"
+          aws ssm get-command-invocation \
+            --region "$AWS_DEFAULT_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+            --output json || true
+          exit 1
