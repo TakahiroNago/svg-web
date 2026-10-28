@@ -332,9 +332,6 @@ export default function App() {
               <ZoomFrame src={svgUrl} alt="変換後の SVG" view={view} setView={setView} />
               <button type="button" onClick={download}>
                 SVG をダウンロード
-              </button>{' '}
-              <button type="button" onClick={() => setView(INITIAL_VIEW)}>
-                表示をリセット
               </button>
             </>
           ) : (
