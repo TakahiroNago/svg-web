@@ -249,16 +249,38 @@ npm run build
 
 このコマンドでは型チェックと本番用ビルドを実行します。
 
-## サーバー変換の設定（任意）
+### テスト
 
-既定ではWebAssemblyを利用してブラウザ内で変換します。
+```powershell
+npm test
+```
 
-環境変数`VITE_API_BASE_URL`を設定してビルドすると、画像をGo REST APIへ送信し、サーバー側のC++画像変換エンジンで変換できます。
+Vitestで、変換モードの設定、APIエラー時の表示、各モードのプライバシー表示、WASMモジュールによる変換を確認します。
 
-- 未設定の場合：ブラウザ内のWASMで変換
-- 設定した場合：API経由でサーバー側のエンジンを使用
+## 変換モードの設定
 
-`VITE_API_BASE_URL`はフロントエンドのビルド時に反映されます。AWS環境ではフロントエンドとAPIを同じオリジンから利用できる構成にしています。
+変換方式は、ビルド時の環境変数`VITE_CONVERTER_MODE`で指定します。
+
+| 値 | 変換方式 | 利用環境 |
+| --- | --- | --- |
+| 未設定 / `wasm` | ブラウザ内のWebAssemblyで変換（画像は送信しない） | Cloudflare Pages |
+| `server` | Go REST API → gRPC → C++ / OpenCVで変換（画像をサーバーへ送信） | AWS（`docker-compose.yml`で指定） |
+
+- `VITE_API_BASE_URL`は`server`モードでのみ使用します。空の場合は同一オリジンの`/api/v1/convert`を呼び出します（AWSでは`docker/nginx.conf`が`/api/`をGo REST APIへ転送します）。値には`/api`を含めません。
+- `wasm`モードで`VITE_API_BASE_URL`を設定した場合や、`wasm`・`server`以外の値を指定した場合は、ビルドと開発サーバーの起動がエラーになります。設定の誤りによって、意図しない変換方式で公開されることを防ぐためです。
+- `server`モードでAPIの呼び出しに失敗した場合は、エラーを表示します。WebAssemblyへの自動切り替えは行いません。
+- ビルドした`index.html`には`<meta name="converter-mode" content="...">`が含まれ、デプロイ後の確認に使用します。
+
+ローカルでサーバー変換を試す場合は、`svg-app`で`docker compose up`を実行したうえで、`.env`に次のように設定します。
+
+```text
+VITE_CONVERTER_MODE=server
+VITE_API_BASE_URL=http://localhost:8080
+```
+
+### ヘルスチェック
+
+フロントエンドのNginxは、`/api/healthz`をGo REST APIの`GET /healthz`へ転送します。GitHub Actionsのデプロイでは、フロントエンドに加えて`/api/healthz`の応答と、公開中のビルドが`server`モードであることを確認します。
 
 ## WASMファイルの管理
 
