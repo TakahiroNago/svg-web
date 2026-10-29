@@ -91,7 +91,7 @@ function useObjectUrl(blob: Blob | null): string | null {
 }
 
 export default function App() {
-  const { engine, engineError, analyze, generate } = useConverter()
+  const { mode, engine, engineError, convert, generate } = useConverter()
   const [file, setFile] = useState<File | null>(null)
   const [colors, setColors] = useState<number>(DEFAULT_COLORS)
   const [boundary, setBoundary] = useState(false)
@@ -145,11 +145,9 @@ export default function App() {
       const img = await decodeImage(file)
       if (id !== runId.current) return
       setStatus('converting')
-      const pal = await analyze(img.rgba, img.width, img.height, colors)
+      const out = await convert(img.rgba, img.width, img.height, colors, boundary)
       if (id !== runId.current) return
-      const all = pal.filter((c) => c.area > 0)
-      const out = await generate(all.map((c) => c.index), boundary)
-      if (id !== runId.current) return
+      const all = out.palette.filter((c) => c.area > 0)
       setPalette(all)
       setSelected(new Set(all.map((c) => c.index)))
       setAnalyzedColors(colors)
@@ -164,7 +162,7 @@ export default function App() {
       setError((e as Error).message)
       setStatus('error')
     }
-  }, [file, colors, boundary, analyze, generate])
+  }, [file, colors, boundary, convert])
 
   const regenerate = useCallback(async () => {
     const id = ++runId.current
@@ -211,12 +209,29 @@ export default function App() {
     <main className="app">
       <header>
         <h1>画像 → SVG 変換</h1>
-        <p>ブラウザ内で WebAssembly を使って変換します。画像は外部に送信されません。</p>
-        <p className={`badge engine-${engine}`} role="status">
-          {engine === 'initializing' && '変換エンジンを初期化中…'}
-          {engine === 'ready' && '変換エンジン準備完了'}
-          {engine === 'failed' && `エンジンの初期化に失敗しました: ${engineError}`}
-        </p>
+        {mode === 'server' ? (
+          <>
+            <p>サーバー(Go REST API → gRPC → C++ / OpenCV)で変換します。</p>
+            <p className="badge notice" data-testid="privacy-notice">
+              画像は変換のためサーバーへ送信されます。機密性の高い画像や個人情報を含む画像はアップロードしないでください。
+            </p>
+            {/* Nothing is requested until a conversion runs, so this must not read as a health check. */}
+            <p className="badge engine-server" role="status">
+              サーバー変換モード: 変換サーバーの状態は、変換を実行したときに確認されます。
+            </p>
+          </>
+        ) : (
+          <>
+            <p data-testid="privacy-notice">
+              ブラウザ内で WebAssembly を使って変換します。画像は外部に送信されません。
+            </p>
+            <p className={`badge engine-${engine}`} role="status">
+              {engine === 'initializing' && '変換エンジンを初期化中…'}
+              {engine === 'ready' && '変換エンジン準備完了'}
+              {engine === 'failed' && `エンジンの初期化に失敗しました: ${engineError}`}
+            </p>
+          </>
+        )}
       </header>
 
       <section className="panel controls">
@@ -262,7 +277,11 @@ export default function App() {
 
       {busy && (
         <p className="badge busy" role="status">
-          {status === 'decoding' ? '画像をデコード中…' : 'SVG に変換中…(画像が大きいと時間がかかります)'}
+          {status === 'decoding'
+            ? '画像をデコード中…'
+            : mode === 'server'
+              ? 'サーバーで SVG に変換中…(画像が大きいと時間がかかります)'
+              : 'SVG に変換中…(画像が大きいと時間がかかります)'}
         </p>
       )}
       {status === 'error' && (
