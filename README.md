@@ -174,6 +174,15 @@ HTTP / HTTPS Health Checks
 - APIおよびgRPCサービスは、Dockerネットワークを通じて接続
 - デプロイ用AWS認証情報をGitHub Secretsで管理
 
+### 監視およびアラート
+
+- **Amazon CloudWatch**: EC2ステータスチェック失敗の監視
+- **Amazon SNS**: アラームが「ALARM」状態になった際のメール通知
+- **アラームしきい値**: `StatusCheckFailed >= 1`
+- **評価期間**: 5分
+
+運用手順およびトラブルシューティングについては、[`docs/operations.md`](docs/operations.md) を参照してください。
+
 ### 動作確認
 
 AWS検証環境で、ブラウザからの画像アップロード、SVG変換、変換結果のダウンロードまで正常に動作することを確認しています。
