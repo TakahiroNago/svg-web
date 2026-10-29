@@ -40,7 +40,7 @@ jobs:
             --region "$AWS_DEFAULT_REGION" \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["set -eu","cd /home/ubuntu/apps/svg-web","git fetch origin main","git switch main","git pull --ff-only origin main","docker compose build web","docker compose up -d --no-deps --force-recreate web","curl -fsS http://127.0.0.1:8081/ > /dev/null","curl -fsS https://aws-svg.art-full-stack.com/ > /dev/null","echo Deployment successful"]' \
+            --parameters 'commands=["set -eu","cd /home/ubuntu/apps/svg-web","sudo -u ubuntu -H git -C /home/ubuntu/apps/svg-web fetch origin main","sudo -u ubuntu -H git -C /home/ubuntu/apps/svg-web switch main","sudo -u ubuntu -H git -C /home/ubuntu/apps/svg-web pull --ff-only origin main","docker compose build web","docker compose up -d --no-deps --force-recreate web","curl -fsS http://127.0.0.1:8081/ > /dev/null","curl -fsS https://aws-svg.art-full-stack.com/ > /dev/null","echo Deployment successful"]' \
             --query 'Command.CommandId' \
             --output text)
 
