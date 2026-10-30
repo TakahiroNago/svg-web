@@ -3,222 +3,38 @@ import './App.css'
 import { decodeImage } from './converter/decode.ts'
 import { COLOR_OPTIONS, DEFAULT_COLORS, MAX_FILE_BYTES, validateFile } from './converter/limits.ts'
 import { useConverter } from './converter/useConverter.ts'
+import { HelpDialog, type HelpTopic } from './HelpDialog.tsx'
+import { createSampleImage } from './sample.ts'
+import { INITIAL_VIEW, MAX_SCALE, MIN_SCALE, ZOOM_STEP, zoomFrameCenter, type View } from './view.ts'
+import { Viewer } from './Viewer.tsx'
 import type { PaletteColor } from './wasm/svg-converter.js'
 
-type Status = 'idle' | 'decoding' | 'converting' | 'done' | 'error'
+type Status = 'idle' | 'decoding' | 'converting'
 
-// Settings the shown SVG was generated with, so changes can be detected and the download named correctly.
-type Result = { blob: Blob; contours: number; colors: number; boundary: boolean; kept: string }
+type ViewMode = 'compare' | 'svg' | 'code'
 
-type View = { scale: number; x: number; y: number }
-const INITIAL_VIEW: View = { scale: 1, x: 0, y: 0 }
-const MIN_SCALE = 1
-const MAX_SCALE = 64
-const ZOOM_STEP = 1.25
-const PAN_STEP = 40
-
-// Keeps the scaled image covering the frame, so it cannot be dragged out of sight.
-function clampView(v: View, w: number, h: number): View {
-  if (v.scale <= MIN_SCALE) return INITIAL_VIEW
-  return {
-    scale: v.scale,
-    x: Math.min(0, Math.max(w - w * v.scale, v.x)),
-    y: Math.min(0, Math.max(h - h * v.scale, v.y)),
-  }
+// The SVG on screen and the settings it was generated with. Comparing these with the current
+// settings decides whether to re-analyze, regenerate, or do nothing.
+type Result = {
+  file: File
+  svg: string
+  blob: Blob
+  paths: number
+  colors: number
+  boundary: boolean
+  kept: string
 }
 
-// Zooms by `factor` while keeping the frame point (cx, cy) in place.
-function zoomAt(v: View, factor: number, cx: number, cy: number, w: number, h: number): View {
-  const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, v.scale * factor))
-  const k = scale / v.scale
-  return clampView({ scale, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k }, w, h)
-}
+// Settings changes wait this long, so dragging the slider sends one conversion, not dozens.
+const SETTLE_MS = 400
+// Rendering a multi-megabyte SVG as text would freeze the page; copying still gives the whole file.
+const CODE_PREVIEW_CHARS = 200_000
 
-type Point = { x: number; y: number }
-
-function pinchOf(a: Point, b: Point) {
-  return { dist: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }
-}
-
-// Both frames have the same size, so a shared pixel-based view keeps them in sync.
-function ZoomFrame({
-  src,
-  alt,
-  view,
-  setView,
-}: {
-  src: string
-  alt: string
-  view: View
-  setView: React.Dispatch<React.SetStateAction<View>>
-}) {
-  const frameRef = useRef<HTMLDivElement>(null)
-  const pointers = useRef(new Map<number, Point>())
-
-  // Applies `f` with the frame size; does nothing before the frame is mounted.
-  const update = useCallback(
-    (f: (v: View, w: number, h: number) => View) => {
-      const el = frameRef.current
-      if (!el) return
-      const w = el.clientWidth
-      const h = el.clientHeight
-      setView((v) => f(v, w, h))
-    },
-    [setView],
-  )
-  const zoomCenter = (factor: number) => update((v, w, h) => zoomAt(v, factor, w / 2, h / 2, w, h))
-  const pan = (dx: number, dy: number) => update((v, w, h) => clampView({ ...v, x: v.x + dx, y: v.y + dy }, w, h))
-
-  useEffect(() => {
-    const el = frameRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => {
-      // A plain wheel scrolls the page. Ctrl/⌘ + wheel zooms; trackpad pinches arrive as that too.
-      if (!e.ctrlKey && !e.metaKey) return
-      e.preventDefault()
-      const rect = el.getBoundingClientRect()
-      const factor = Math.exp(-e.deltaY * 0.002)
-      update((v, w, h) => zoomAt(v, factor, e.clientX - rect.left, e.clientY - rect.top, w, h))
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [update])
-
-  const endPointer = (e: React.PointerEvent) => pointers.current.delete(e.pointerId)
-  const zoomed = view.scale > MIN_SCALE
-
-  return (
-    <>
-      <div
-        ref={frameRef}
-        className={`frame zoom-frame${zoomed ? ' zoomed' : ''}`}
-        tabIndex={0}
-        role="group"
-        aria-label={`${alt}（+ / - で拡大縮小、矢印キーで移動、0 でリセット）`}
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId)
-          pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-        }}
-        onPointerMove={(e) => {
-          const ps = pointers.current
-          const prev = ps.get(e.pointerId)
-          if (!prev) return
-          const cur = { x: e.clientX, y: e.clientY }
-          ps.set(e.pointerId, cur)
-          if (ps.size === 1) {
-            pan(cur.x - prev.x, cur.y - prev.y)
-          } else if (ps.size === 2) {
-            const other = [...ps].find(([id]) => id !== e.pointerId)![1]
-            const before = pinchOf(prev, other)
-            const after = pinchOf(cur, other)
-            if (before.dist === 0) return
-            const rect = e.currentTarget.getBoundingClientRect()
-            update((v, w, h) => {
-              const z = zoomAt(v, after.dist / before.dist, after.cx - rect.left, after.cy - rect.top, w, h)
-              return clampView({ ...z, x: z.x + after.cx - before.cx, y: z.y + after.cy - before.cy }, w, h)
-            })
-          }
-        }}
-        onPointerUp={endPointer}
-        onPointerCancel={endPointer}
-        onDoubleClick={() => setView(INITIAL_VIEW)}
-        onKeyDown={(e) => {
-          const arrows: Record<string, [number, number]> = {
-            ArrowLeft: [PAN_STEP, 0],
-            ArrowRight: [-PAN_STEP, 0],
-            ArrowUp: [0, PAN_STEP],
-            ArrowDown: [0, -PAN_STEP],
-          }
-          if (e.key === '+' || e.key === '=') zoomCenter(ZOOM_STEP)
-          else if (e.key === '-') zoomCenter(1 / ZOOM_STEP)
-          else if (e.key === '0') setView(INITIAL_VIEW)
-          // At 1x there is nothing to pan, so let the arrows scroll the page.
-          else if (e.key in arrows && zoomed) pan(...arrows[e.key])
-          else return
-          e.preventDefault()
-        }}
-      >
-        <img
-          src={src}
-          alt={alt}
-          draggable={false}
-          style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
-        />
-      </div>
-      <div className="zoom-bar">
-        <button
-          type="button"
-          className="secondary"
-          aria-label="縮小"
-          disabled={!zoomed}
-          onClick={() => zoomCenter(1 / ZOOM_STEP)}
-        >
-          −
-        </button>
-        <span className="zoom-level">{Math.round(view.scale * 100)}%</span>
-        <button
-          type="button"
-          className="secondary"
-          aria-label="拡大"
-          disabled={view.scale >= MAX_SCALE}
-          onClick={() => zoomCenter(ZOOM_STEP)}
-        >
-          +
-        </button>
-        <button type="button" className="secondary" disabled={!zoomed} onClick={() => setView(INITIAL_VIEW)}>
-          リセット
-        </button>
-      </div>
-    </>
-  )
-}
-
-function CompareView({ before, after }: { before: string; after: string }) {
-  const [split, setSplit] = useState(50)
-  const setFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
-    const r = e.currentTarget.getBoundingClientRect()
-    setSplit(Math.min(100, Math.max(0, ((e.clientX - r.left) / r.width) * 100)))
-  }
-
-  return (
-    <>
-      <div
-        className="compare"
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId)
-          setFromPointer(e)
-        }}
-        onPointerMove={(e) => {
-          if (e.currentTarget.hasPointerCapture(e.pointerId)) setFromPointer(e)
-        }}
-      >
-        <img className="base" src={after} alt="変換後" draggable={false} />
-        <img
-          className="over"
-          src={before}
-          alt="変換前"
-          draggable={false}
-          style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}
-        />
-        <div className="handle" style={{ left: `${split}%` }} />
-        <span className="tag left">変換前</span>
-        <span className="tag right">変換後</span>
-      </div>
-      <label className="slider">
-        <span>画像上をドラッグするか、スライダーで境界を動かせます</span>
-        <input
-          type="range"
-          min={0}
-          max={100}
-          step="any"
-          value={split}
-          onChange={(e) => setSplit(Number(e.target.value))}
-          aria-label="比較スライダー"
-        />
-      </label>
-    </>
-  )
-}
+const PRESETS = [
+  { label: 'ロゴ', sub: '2–8色', colors: 6 },
+  { label: 'イラスト', sub: '8–16色', colors: 12 },
+  { label: '写真', sub: '16色〜', colors: 24 },
+] as const
 
 function useObjectUrl(blob: Blob | null): string | null {
   const [url, setUrl] = useState<string | null>(null)
@@ -259,6 +75,11 @@ function formatShare(area: number, total: number): string {
   return pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`
 }
 
+const keptKey = (indices: number[]) => indices.join(',')
+
+// The engine writes one <path> per color (holes included), so this differs from its contour count.
+const countPaths = (svg: string) => svg.match(/<path\b/g)?.length ?? 0
+
 export default function App() {
   const { mode, engine, engineError, convert, generate } = useConverter()
   const [file, setFile] = useState<File | null>(null)
@@ -267,13 +88,19 @@ export default function App() {
   const [status, setStatus] = useState<Status>('idle')
   const [error, setError] = useState('')
   const [result, setResult] = useState<Result | null>(null)
-  const [layout, setLayout] = useState<'side' | 'compare'>('side')
-  const [dragging, setDragging] = useState(false)
-  const [view, setView] = useState<View>(INITIAL_VIEW)
   const [palette, setPalette] = useState<PaletteColor[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [viewMode, setViewMode] = useState<ViewMode>('compare')
+  const [view, setView] = useState<View>(INITIAL_VIEW)
+  const [split, setSplit] = useState(50)
+  const [dragging, setDragging] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [help, setHelp] = useState<HelpTopic | null>(null)
   const runId = useRef(0)
+  // The attempt that last failed, so a broken image or a down server is not retried in a loop.
+  const failed = useRef<{ file: File; key: string } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const viewerRef = useRef<HTMLDivElement>(null)
 
   const originalUrl = useObjectUrl(file)
   const originalSize = useImageSize(originalUrl)
@@ -281,29 +108,37 @@ export default function App() {
   const svgUrl = useObjectUrl(result?.blob ?? null)
 
   const onFile = useCallback((f: File | undefined) => {
-    runId.current++
-    setResult(null)
-    setView(INITIAL_VIEW)
-    setPalette([])
-    setSelected(new Set())
-    setStatus('idle')
-    if (!f) {
-      setFile(null)
-      return
-    }
+    if (!f) return
+    // An invalid file leaves the current image and result alone.
     const err = validateFile(f)
     if (err) {
-      setFile(null)
       setError(err)
-      setStatus('error')
       return
     }
+    runId.current++
+    failed.current = null
     setError('')
+    setStatus('idle')
+    setResult(null)
+    setPalette([])
+    setSelected(new Set())
+    setView(INITIAL_VIEW)
+    setSplit(50)
     setFile(f)
   }, [])
 
-  // Files can be dropped anywhere on the page. Without this, a drop outside a drop zone
-  // would make the browser open the image and discard the current work.
+  const openPicker = () => fileInput.current?.click()
+
+  const loadSample = async () => {
+    try {
+      onFile(await createSampleImage())
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  // Files can be dropped anywhere on the page or pasted. Without this, a drop outside a drop
+  // zone would make the browser open the image and discard the current work.
   useEffect(() => {
     let depth = 0
     const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false
@@ -329,24 +164,33 @@ export default function App() {
       setDragging(false)
       onFile(e.dataTransfer!.files[0])
     }
+    const onPaste = (e: ClipboardEvent) => {
+      const f = e.clipboardData?.files[0]
+      if (!f) return
+      e.preventDefault()
+      onFile(f)
+    }
     window.addEventListener('dragenter', onEnter)
     window.addEventListener('dragleave', onLeave)
     window.addEventListener('dragover', onOver)
     window.addEventListener('drop', onDrop)
+    window.addEventListener('paste', onPaste)
     return () => {
       window.removeEventListener('dragenter', onEnter)
       window.removeEventListener('dragleave', onLeave)
       window.removeEventListener('dragover', onOver)
       window.removeEventListener('drop', onDrop)
+      window.removeEventListener('paste', onPaste)
     }
   }, [onFile])
 
-  const keptKey = (indices: number[]) => indices.join(',')
   const selectedKey = keptKey(palette.filter((c) => selected.has(c.index)).map((c) => c.index))
+  const attemptKey = `${colors}|${boundary}|${selectedKey}`
 
   const run = useCallback(async () => {
     if (!file) return
     const id = ++runId.current
+    const key = attemptKey
     setError('')
     setStatus('decoding')
     try {
@@ -359,25 +203,27 @@ export default function App() {
       setPalette(all)
       setSelected(new Set(all.map((c) => c.index)))
       setResult({
+        file,
+        svg: out.svg,
         blob: new Blob([out.svg], { type: 'image/svg+xml' }),
-        contours: out.contourCount,
+        paths: countPaths(out.svg),
         colors,
         boundary,
         kept: keptKey(all.map((c) => c.index)),
       })
-      setStatus('done')
+      setStatus('idle')
     } catch (e) {
       if (id !== runId.current) return
-      setResult(null)
-      setPalette([])
+      failed.current = { file, key }
       setError((e as Error).message)
-      setStatus('error')
+      setStatus('idle')
     }
-  }, [file, colors, boundary, convert])
+  }, [file, colors, boundary, attemptKey, convert])
 
   const regenerate = useCallback(async () => {
-    if (!result) return
+    if (!file || !result) return
     const id = ++runId.current
+    const key = attemptKey
     setError('')
     setStatus('converting')
     try {
@@ -385,19 +231,42 @@ export default function App() {
       const out = await generate(kept, boundary)
       if (id !== runId.current) return
       setResult({
+        ...result,
+        svg: out.svg,
         blob: new Blob([out.svg], { type: 'image/svg+xml' }),
-        contours: out.contourCount,
-        colors: result.colors,
+        paths: countPaths(out.svg),
         boundary,
         kept: keptKey(kept),
       })
-      setStatus('done')
+      setStatus('idle')
     } catch (e) {
       if (id !== runId.current) return
+      failed.current = { file, key }
       setError((e as Error).message)
-      setStatus('error')
+      setStatus('idle')
     }
-  }, [result, palette, selected, boundary, generate])
+  }, [file, result, palette, selected, boundary, attemptKey, generate])
+
+  // A different image or color count needs a new analysis; other changes only regenerate the SVG.
+  const analyzeNeeded = !!file && (!result || result.file !== file || result.colors !== colors)
+  const regenerateNeeded =
+    !analyzeNeeded && !!result && (result.boundary !== boundary || result.kept !== selectedKey)
+
+  // Settings apply by themselves: a new image converts at once, later changes once they settle.
+  useEffect(() => {
+    if (!file || engine !== 'ready') return
+    if (!analyzeNeeded && !(regenerateNeeded && selectedKey !== '')) return
+    const f = failed.current
+    if (f && f.file === file && f.key === attemptKey) return
+    const t = setTimeout(analyzeNeeded ? run : regenerate, result?.file === file ? SETTLE_MS : 0)
+    return () => clearTimeout(t)
+  }, [file, engine, result, analyzeNeeded, regenerateNeeded, selectedKey, attemptKey, run, regenerate])
+
+  const retry = () => {
+    failed.current = null
+    if (analyzeNeeded) run()
+    else regenerate()
+  }
 
   const toggleColor = (index: number) => {
     setSelected((prev) => {
@@ -407,244 +276,389 @@ export default function App() {
     })
   }
 
-  const busy = status === 'decoding' || status === 'converting'
-  const canRun = !!file && engine === 'ready' && !busy
-  // A different color count needs a new analysis; other changes only need the SVG regenerated.
-  const needsAnalyze = !!result && colors !== result.colors
-  const needsRegenerate =
-    !!result && !needsAnalyze && (boundary !== result.boundary || selectedKey !== result.kept)
-  const canRegenerate = canRun && !!result && !needsAnalyze && selected.size > 0
-  const totalArea = palette.reduce((sum, c) => sum + c.area, 0)
-
   const download = () => {
-    if (!svgUrl || !file || !result) return
+    if (!svgUrl || !result) return
     const a = document.createElement('a')
     a.href = svgUrl
-    a.download = file.name.replace(/\.[^.]+$/, '') + (result.boundary ? '-boundary' : '') + '.svg'
+    a.download = result.file.name.replace(/\.[^.]+$/, '') + (result.boundary ? '-boundary' : '') + '.svg'
     a.click()
   }
 
+  const copy = async () => {
+    if (!result) return
+    try {
+      await navigator.clipboard.writeText(result.svg)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setError('コードをコピーできませんでした。ブラウザがクリップボードへの書き込みを許可していない可能性があります。')
+    }
+  }
+
+  const busy = status !== 'idle'
+  const busyLabel = !busy
+    ? null
+    : status === 'decoding'
+      ? '画像を読み込み中…'
+      : mode === 'server'
+        ? 'サーバーで変換中…'
+        : '変換中…'
+  const canRetry = !!error && !!file && !busy && engine === 'ready' && (analyzeNeeded || regenerateNeeded)
+  const colorIndex = Math.max(0, COLOR_OPTIONS.indexOf(colors as (typeof COLOR_OPTIONS)[number]))
+  const totalArea = palette.reduce((sum, c) => sum + c.area, 0)
+  const zoomed = view.scale > MIN_SCALE
+
+  const errorAlert = error && (
+    <div className="alert error" role="alert">
+      <span>エラー: {error}</span>
+      {canRetry && (
+        <button type="button" className="secondary small" onClick={retry}>
+          再試行
+        </button>
+      )}
+    </div>
+  )
+  const engineAlert = engine === 'failed' && (
+    <p className="alert error" role="alert">
+      変換エンジンの初期化に失敗しました: {engineError}
+    </p>
+  )
+
   return (
-    <main className="app">
+    <div className="app">
+      <input
+        ref={fileInput}
+        className="visually-hidden"
+        type="file"
+        accept="image/png,image/jpeg"
+        tabIndex={-1}
+        aria-label="画像ファイル"
+        onChange={(e) => {
+          onFile(e.target.files?.[0])
+          // Lets the same file be picked again.
+          e.target.value = ''
+        }}
+      />
+
       {dragging && (
         <div className="drop-overlay" aria-hidden="true">
           ここにドロップして画像を読み込みます
         </div>
       )}
 
-      <header>
-        <h1>画像 → SVG 変換</h1>
-        {mode === 'server' ? (
-          <>
-            <p className="badge notice" data-testid="privacy-notice">
-              画像は変換のためサーバーへ送信されます。機密性の高い画像や個人情報を含む画像はアップロードしないでください。
-            </p>
-            {/* Nothing is requested until a conversion runs, so this must not read as a health check. */}
-            <p className="mode-note" role="status">
-              サーバー(Go REST API → gRPC → C++ / OpenCV)で変換します。変換サーバーの状態は、変換を実行したときに確認されます。
-            </p>
-          </>
-        ) : (
-          <div className="mode-row">
-            <p className="mode-note" data-testid="privacy-notice">
-              ブラウザ内で WebAssembly を使って変換します。画像は外部に送信されません。
-            </p>
-            <p className={`pill engine-${engine}`} role="status">
-              {engine === 'initializing' && '変換エンジンを初期化中…'}
-              {engine === 'ready' && '変換エンジン準備完了'}
-              {engine === 'failed' && `エンジンの初期化に失敗しました: ${engineError}`}
-            </p>
+      <header className="topbar">
+        <div className="brand">
+          <span className="logo" aria-hidden="true" />
+          <span>SVG変換</span>
+        </div>
+        {file ? (
+          <div className="topbar-file">
+            <span className="mono file-meta">
+              {file.name}
+              {originalSize && ` ・ ${originalSize.width}×${originalSize.height}`}
+            </span>
+            <button type="button" className="secondary small" onClick={openPicker}>
+              別の画像
+            </button>
           </div>
+        ) : (
+          <nav className="topnav">
+            <button type="button" className="link" onClick={() => setHelp('howto')}>
+              使い方
+            </button>
+            <button type="button" className="link" onClick={() => setHelp('faq')}>
+              よくある質問
+            </button>
+          </nav>
         )}
       </header>
 
-      <section className="panel controls">
-        <div className="field">
-          <span>画像ファイル (PNG / JPEG、{MAX_FILE_BYTES / 1024 / 1024} MB まで)</span>
-          <div className="file-picker">
-            <label className="file-button">
-              画像を選択
-              <input
-                ref={fileInput}
-                className="visually-hidden"
-                type="file"
-                accept="image/png,image/jpeg"
-                onChange={(e) => {
-                  onFile(e.target.files?.[0])
-                  // The chosen file is shown next to the button, and clearing lets the same file be picked again.
-                  e.target.value = ''
-                }}
-              />
-            </label>
-            <span className="file-name">{file ? `${file.name}（${formatBytes(file.size)}）` : '未選択'}</span>
+      {!file || !originalUrl ? (
+        <main className="landing">
+          <div className="hero">
+            <h1>画像を、拡大しても崩れないSVGに。</h1>
+            <p className="only-wide">PNG・JPEGをドロップするだけ。登録不要・無料。</p>
+            <p className="only-narrow">
+              {mode === 'server' ? '登録不要・無料。' : '登録不要・無料。ブラウザだけで完結。'}
+            </p>
           </div>
-        </div>
-        <label className="field">
-          <span>色数</span>
-          <select value={colors} onChange={(e) => setColors(Number(e.target.value))}>
-            {COLOR_OPTIONS.map((c) => (
-              <option key={c} value={c}>
-                {c} 色
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={boundary} onChange={(e) => setBoundary(e.target.checked)} />
-          <span>境界線モード(塗りなし)</span>
-        </label>
-        <button type="button" onClick={run} disabled={!canRun}>
-          {busy ? '変換中…' : '変換する'}
-        </button>
-      </section>
 
-      {busy && (
-        <p className="badge busy" role="status">
-          {status === 'decoding'
-            ? '画像をデコード中…'
-            : mode === 'server'
-              ? 'サーバーで SVG に変換中…(画像が大きいと時間がかかります)'
-              : 'SVG に変換中…(画像が大きいと時間がかかります)'}
-        </p>
-      )}
-      {status === 'error' && (
-        <p className="badge error" role="alert">
-          エラー: {error}
-        </p>
-      )}
-      {!busy && needsAnalyze && (
-        <p className="badge warn" role="status">
-          色数が変更されました。「変換する」を押すと画像を解析し直します。
-        </p>
-      )}
-      {!busy && needsRegenerate && (
-        <p className="badge warn" role="status">
-          設定が変更されました。「再変換」を押すとプレビューに反映されます。
-        </p>
-      )}
-
-      {palette.length > 0 && (
-        <section className="panel">
-          <div className="panel-head">
-            <h2>使用する色</h2>
-            <button
-              type="button"
-              className="secondary"
-              disabled={selected.size === palette.length}
-              onClick={() => setSelected(new Set(palette.map((c) => c.index)))}
-            >
-              すべて選択
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              disabled={selected.size === 0}
-              onClick={() => setSelected(new Set())}
-            >
-              すべて解除
-            </button>
+          <div
+            className="drop-card"
+            onClick={(e) => {
+              // The buttons have their own actions; the rest of the card opens the picker.
+              if (!(e.target as HTMLElement).closest('button')) openPicker()
+            }}
+          >
+            <div className="drop-target">
+              <span className="drop-icon" aria-hidden="true">
+                ↑
+              </span>
+              <span className="drop-title only-wide">ここに画像をドロップ</span>
+              <span className="drop-title only-narrow">タップして画像を選択</span>
+              <span className="drop-hint mono">
+                PNG / JPEG ・ 最大 {MAX_FILE_BYTES / 1024 / 1024} MB<span className="only-wide"> ・ Ctrl+V で貼り付けも可</span>
+              </span>
+            </div>
+            <div className="drop-actions">
+              <button type="button" className="large" onClick={openPicker}>
+                <span className="only-wide">ファイルを選択</span>
+                <span className="only-narrow">写真・ファイルを選ぶ</span>
+              </button>
+              <button type="button" className="secondary large" onClick={loadSample}>
+                サンプルで試す
+              </button>
+            </div>
           </div>
-          <ul className="palette">
-            {palette.map((c) => {
-              const share = formatShare(c.area, totalArea)
-              return (
-                <li key={c.index}>
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(c.index)}
-                      onChange={() => toggleColor(c.index)}
-                      aria-label={`${c.hex}（${share}）`}
-                    />
-                    <span className="swatch" style={{ background: c.hex }} title={c.hex} />
-                    <span className="share">{share}</span>
-                  </label>
-                </li>
-              )
-            })}
-          </ul>
-          <button type="button" onClick={regenerate} disabled={!canRegenerate}>
-            再変換
-          </button>
-          {selected.size === 0 && <p className="hint">少なくとも 1 色を選択してください。</p>}
-        </section>
-      )}
 
-      {result && svgUrl && (
-        <div className="result-bar">
-          <div className="segmented" role="group" aria-label="表示方法">
-            <button
-              type="button"
-              aria-pressed={layout === 'side'}
-              onClick={() => setLayout('side')}
-            >
-              並べて表示
-            </button>
-            <button
-              type="button"
-              aria-pressed={layout === 'compare'}
-              onClick={() => setLayout('compare')}
-            >
-              重ねて比較
-            </button>
-          </div>
-          <button type="button" onClick={download}>
-            SVG をダウンロード
-          </button>
-        </div>
-      )}
+          {engineAlert}
+          {errorAlert}
 
-      {originalUrl && svgUrl && layout === 'compare' ? (
-        <section className="panel">
-          <h2>変換前後の比較</h2>
-          <CompareView before={originalUrl} after={svgUrl} />
-        </section>
-      ) : (
-        <>
-          <div className="grid">
-            <section className="panel">
-              <h2>
-                元画像
-                {originalSize && (
-                  <small>
-                    {' '}
-                    {originalSize.width}×{originalSize.height} px
-                  </small>
-                )}
-              </h2>
-              {originalUrl ? (
-                <ZoomFrame src={originalUrl} alt="選択した元画像" view={view} setView={setView} />
-              ) : (
-                <button type="button" className="dropzone" onClick={() => fileInput.current?.click()}>
-                  クリックして画像を選択、またはページにドラッグ&ドロップしてください
-                </button>
-              )}
-            </section>
-
-            <section className="panel">
-              <h2>
-                SVG プレビュー
-                {result && (
-                  <small>
-                    {' '}
-                    輪郭 {result.contours.toLocaleString()} 件 · {formatBytes(result.blob.size)}
-                  </small>
-                )}
-              </h2>
-              {svgUrl ? (
-                <ZoomFrame src={svgUrl} alt="変換後の SVG" view={view} setView={setView} />
-              ) : (
-                <p className="placeholder">変換結果がここに表示されます</p>
-              )}
-            </section>
-          </div>
-          {originalUrl && (
-            <p className="hint">
-              Ctrl(⌘) + ホイールまたはピンチで拡大、ドラッグで移動、ダブルクリックで元に戻します。2 つの表示は連動します。
+          {mode === 'server' ? (
+            <div className="privacy server" data-testid="privacy-notice">
+              <span className="dot" aria-hidden="true" />
+              画像は変換のためサーバーへ送信されます。機密性の高い画像や個人情報を含む画像はアップロードしないでください。
+            </div>
+          ) : (
+            <div className="privacy" data-testid="privacy-notice">
+              <span className="dot" aria-hidden="true" />
+              <span className="only-wide">画像はブラウザ内で処理され、外部に送信されません</span>
+              <span className="only-narrow">画像は外部に送信されません</span>
+            </div>
+          )}
+          {mode === 'wasm' && engine === 'initializing' && (
+            <p className="engine-note" role="status">
+              変換エンジンを準備中…
             </p>
           )}
-        </>
+        </main>
+      ) : (
+        <main className="workspace">
+          <section className="stage" aria-label="プレビュー">
+            <div className="stage-bar">
+              <div className="segmented" role="group" aria-label="表示">
+                {(
+                  [
+                    ['compare', '比較'],
+                    ['svg', 'SVGのみ'],
+                    ['code', 'コード'],
+                  ] as const
+                ).map(([m, label]) => (
+                  <button
+                    key={m}
+                    type="button"
+                    aria-pressed={viewMode === m}
+                    disabled={m === 'code' && !result}
+                    onClick={() => setViewMode(m)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {viewMode !== 'code' && (
+                <div className="zoom-controls">
+                  <button
+                    type="button"
+                    className="secondary square"
+                    aria-label="縮小"
+                    disabled={!zoomed}
+                    onClick={() => zoomFrameCenter(viewerRef.current, setView, 1 / ZOOM_STEP)}
+                  >
+                    −
+                  </button>
+                  <button
+                    type="button"
+                    className="zoom-level mono"
+                    title="クリックで元の大きさに戻す"
+                    aria-label={`拡大率 ${Math.round(view.scale * 100)}%（元に戻す）`}
+                    onClick={() => setView(INITIAL_VIEW)}
+                  >
+                    {Math.round(view.scale * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary square"
+                    aria-label="拡大"
+                    disabled={view.scale >= MAX_SCALE}
+                    onClick={() => zoomFrameCenter(viewerRef.current, setView, ZOOM_STEP)}
+                  >
+                    +
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {engineAlert}
+            {errorAlert}
+
+            {viewMode === 'code' && result ? (
+              <div className="code-view" tabIndex={0} aria-label="SVG のコード">
+                <pre>
+                  <code>{result.svg.slice(0, CODE_PREVIEW_CHARS)}</code>
+                </pre>
+                {result.svg.length > CODE_PREVIEW_CHARS && (
+                  <p className="code-note">
+                    先頭 {CODE_PREVIEW_CHARS.toLocaleString()} 文字のみ表示しています。全体は「コードをコピー」で取得できます。
+                  </p>
+                )}
+              </div>
+            ) : (
+              <Viewer
+                frameRef={viewerRef}
+                original={originalUrl}
+                svg={svgUrl}
+                compare={viewMode === 'compare'}
+                view={view}
+                setView={setView}
+                split={split}
+                setSplit={setSplit}
+                busyLabel={busyLabel}
+              />
+            )}
+          </section>
+
+          <aside className="settings" aria-label="変換設定">
+            <div className="setting">
+              <span className="setting-label" id="preset-label">
+                用途
+              </span>
+              <div className="presets" role="group" aria-labelledby="preset-label">
+                {PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    className="preset"
+                    aria-pressed={colors === p.colors}
+                    onClick={() => setColors(p.colors)}
+                  >
+                    <span className="preset-label">{p.label}</span>
+                    <span className="preset-sub mono">{p.sub}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="setting">
+              <span className="setting-row">
+                <span className="setting-label">色数</span>
+                <span className="mono">{colors}</span>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={COLOR_OPTIONS.length - 1}
+                step={1}
+                value={colorIndex}
+                aria-valuetext={`${colors} 色`}
+                onChange={(e) => setColors(COLOR_OPTIONS[Number(e.target.value)])}
+              />
+              <span className="setting-row scale-labels only-wide">
+                <span>シンプル</span>
+                <span>リアル</span>
+              </span>
+            </label>
+
+            <label className="switch-row">
+              <span className="switch-text">
+                <span className="switch-title">線だけで描く</span>
+                <span className="switch-sub only-wide">塗りなし・輪郭のみ</span>
+              </span>
+              <input
+                type="checkbox"
+                role="switch"
+                className="switch"
+                checked={boundary}
+                onChange={(e) => setBoundary(e.target.checked)}
+              />
+            </label>
+
+            {palette.length > 0 && (
+              <details className="advanced">
+                <summary className="mono">詳細設定</summary>
+                <div className="advanced-body">
+                  <div className="setting-row">
+                    <span className="setting-label">使用する色</span>
+                    <span className="palette-actions">
+                      <button
+                        type="button"
+                        className="link small"
+                        disabled={selected.size === palette.length}
+                        onClick={() => setSelected(new Set(palette.map((c) => c.index)))}
+                      >
+                        すべて選択
+                      </button>
+                      <button
+                        type="button"
+                        className="link small"
+                        disabled={selected.size === 0}
+                        onClick={() => setSelected(new Set())}
+                      >
+                        すべて解除
+                      </button>
+                    </span>
+                  </div>
+                  <ul className="palette">
+                    {palette.map((c) => {
+                      const share = formatShare(c.area, totalArea)
+                      return (
+                        <li key={c.index}>
+                          <label className="swatch-item">
+                            <input
+                              type="checkbox"
+                              checked={selected.has(c.index)}
+                              onChange={() => toggleColor(c.index)}
+                              aria-label={`${c.hex}（${share}）`}
+                            />
+                            <span className="swatch" style={{ background: c.hex }} title={c.hex} />
+                            <span className="share mono">{share}</span>
+                          </label>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                  {selected.size === 0 && <p className="hint">少なくとも 1 色を選択してください。</p>}
+                </div>
+              </details>
+            )}
+
+            <div className="actions">
+              <div className="stats mono">
+                <span>
+                  <span className="only-wide">サイズ </span>
+                  <b>{result ? formatBytes(result.blob.size) : '—'}</b>
+                </span>
+                <span>
+                  <span className="only-wide">パス数 </span>
+                  <b>{result ? result.paths.toLocaleString() : '—'}</b>
+                  <span className="only-narrow"> paths</span>
+                </span>
+              </div>
+              <button
+                type="button"
+                className="large primary-action"
+                aria-label="SVGをダウンロード"
+                disabled={!result}
+                onClick={download}
+              >
+                <span className="only-wide">SVGをダウンロード</span>
+                <span className="only-narrow">ダウンロード</span>
+              </button>
+              <button
+                type="button"
+                className="secondary large"
+                aria-label={copied ? 'コピーしました' : 'コードをコピー'}
+                disabled={!result}
+                onClick={copy}
+              >
+                <span className="only-wide">{copied ? 'コピーしました' : 'コードをコピー'}</span>
+                <span className="only-narrow">{copied ? '済' : 'コピー'}</span>
+              </button>
+            </div>
+          </aside>
+        </main>
       )}
-    </main>
+
+      <HelpDialog topic={help} mode={mode} onClose={() => setHelp(null)} />
+    </div>
   )
 }

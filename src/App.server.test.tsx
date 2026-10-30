@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.tsx'
-import { clickConvert, palette, selectImage, stubObjectUrls } from './test/app.ts'
+import { palette, selectImage, stubObjectUrls } from './test/app.ts'
 
 vi.mock('./converter/config.ts', () => ({ CONVERTER_MODE: 'server', API_BASE_URL: '' }))
 vi.mock('./converter/decode.ts', () => ({
@@ -26,6 +26,9 @@ function sentForm(fetchMock: ReturnType<typeof vi.fn>, call: number) {
   return (fetchMock.mock.calls[call] as unknown as [string, RequestInit])[1].body as FormData
 }
 
+// Longer than the settle delay after a settings change.
+const settled = () => new Promise((r) => setTimeout(r, 600))
+
 beforeEach(() => {
   stubObjectUrls()
   WorkerSpy.mockClear()
@@ -44,19 +47,18 @@ describe('server mode', () => {
     expect(screen.getByTestId('privacy-notice')).toHaveTextContent('画像は変換のためサーバーへ送信されます')
     expect(screen.getByTestId('privacy-notice')).toHaveTextContent('機密性の高い画像')
     expect(screen.queryByText(/画像は外部に送信されません/)).toBeNull()
-    expect(screen.getByRole('status')).toHaveTextContent('変換サーバーの状態は、変換を実行したときに確認されます')
-    expect(screen.queryByText('変換エンジン準備完了')).toBeNull()
+    expect(screen.queryByText('変換エンジンを準備中…')).toBeNull()
   })
 
-  it('converts with a single API request and never starts the WASM worker', async () => {
+  it('converts a loaded image with a single API request and never starts the WASM worker', async () => {
     const fetchMock = vi.fn(async () => okResponse())
     vi.stubGlobal('fetch', fetchMock)
     render(<App />)
 
     selectImage()
-    clickConvert()
 
     expect(await screen.findByAltText('変換後の SVG')).toBeInTheDocument()
+    await settled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe('/api/v1/convert')
     const form = sentForm(fetchMock, 0)
@@ -68,37 +70,49 @@ describe('server mode', () => {
     expect(WorkerSpy).not.toHaveBeenCalled()
   })
 
-  it('sends the boundary option in the same single request', async () => {
+  it('re-sends the image when 線だけで描く is switched on', async () => {
     const fetchMock = vi.fn(async () => okResponse())
     vi.stubGlobal('fetch', fetchMock)
     render(<App />)
-
     selectImage()
-    fireEvent.click(screen.getByLabelText('境界線モード(塗りなし)'))
-    clickConvert()
-
     await screen.findByAltText('変換後の SVG')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(sentForm(fetchMock, 0).get('boundary')).toBe('true')
+
+    fireEvent.click(screen.getByRole('switch', { name: /線だけで描く/ }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(sentForm(fetchMock, 1).get('boundary')).toBe('true')
   })
 
-  it('re-sends the image with the selected colors on 再変換', async () => {
+  it('re-sends the image with the selected colors', async () => {
     const fetchMock = vi.fn(async () => okResponse())
     vi.stubGlobal('fetch', fetchMock)
     render(<App />)
-
     selectImage()
-    clickConvert()
     await screen.findByAltText('変換後の SVG')
 
     fireEvent.click(screen.getByTitle('#0000ff'))
-    fireEvent.click(screen.getByRole('button', { name: '再変換' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(sentForm(fetchMock, 1).get('kept_colors')).toBe('1')
   })
 
-  it('shows the API error and does not fall back to WASM', async () => {
+  it('sends one request after quick successive setting changes', async () => {
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    selectImage()
+    await screen.findByAltText('変換後の SVG')
+
+    fireEvent.click(screen.getByRole('button', { name: /イラスト/ }))
+    fireEvent.click(screen.getByRole('button', { name: /写真/ }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    await settled()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(sentForm(fetchMock, 1).get('colors')).toBe('24')
+  })
+
+  it('shows the API error, does not retry by itself, and does not fall back to WASM', async () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(JSON.stringify({ error: 'The conversion engine is unavailable.' }), {
@@ -110,15 +124,18 @@ describe('server mode', () => {
     render(<App />)
 
     selectImage()
-    clickConvert()
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('変換エンジンが一時的に利用できません')
     expect(alert).toHaveTextContent('HTTP 503')
     expect(alert).not.toHaveTextContent('unavailable')
     expect(screen.queryByAltText('変換後の SVG')).toBeNull()
+    await settled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(WorkerSpy).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '再試行' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
   })
 
   it('shows a connection error when the server cannot be reached', async () => {
@@ -126,7 +143,6 @@ describe('server mode', () => {
     render(<App />)
 
     selectImage()
-    clickConvert()
 
     expect(await screen.findByRole('alert')).toHaveTextContent('変換サーバーに接続できませんでした')
     expect(WorkerSpy).not.toHaveBeenCalled()
