@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent } from '@testing-library/react'
 import { vi } from 'vitest'
 
 // jsdom has no Blob URLs; the app only passes them to <img>.
@@ -8,15 +8,11 @@ export function stubObjectUrls() {
   URL.revokeObjectURL = vi.fn()
 }
 
-export function selectImage() {
+export function selectImage(name = 'logo.png', type = 'image/png') {
   const input = document.querySelector<HTMLInputElement>('input[type="file"]')
   if (!input) throw new Error('file input not found')
-  const file = new File([new Uint8Array([137, 80, 78, 71])], 'logo.png', { type: 'image/png' })
+  const file = new File([new Uint8Array([137, 80, 78, 71])], name, { type })
   fireEvent.change(input, { target: { files: [file] } })
-}
-
-export function clickConvert() {
-  fireEvent.click(screen.getByRole('button', { name: '変換する' }))
 }
 
 // Largest area first, as both engines return it. Index 2 has no pixels.
