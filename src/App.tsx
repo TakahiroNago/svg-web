@@ -348,7 +348,8 @@ export default function App() {
 
       <header className="topbar">
         <div className="brand">
-          <span className="logo" aria-hidden="true" />
+          {/* The favicon doubles as the logo, so the two always match. */}
+          <img className="logo" src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" />
           <span>SVG変換</span>
         </div>
         {file ? (
