@@ -61,6 +61,20 @@ GitHub ActionsがAWSの認証情報を使用してSSMコマンドを送信する
 - https://aws-svg.art-full-stack.com/ にアクセスできる。
 - 必要に応じて、画像変換が正常に動作することを確認する。
 
+### 画像サイズ上限・タイムアウトを変更するとき
+
+上限やタイムアウトは次の層ごとに設定されており、自動デプロイで更新されるのはフロントエンドのコンテナだけである。
+
+| 層 | 設定 | 値 | 更新方法 |
+| --- | --- | --- | --- |
+| ホスト側Nginx | `client_max_body_size` / `proxy_read_timeout` / `proxy_send_timeout` | `21m` / `130s` / `130s` 以上 | EC2上で手動変更し `sudo nginx -t && sudo systemctl reload nginx` |
+| フロントエンドNginx | `docker/nginx.conf` | `21m` / `130s` | 自動デプロイ |
+| フロントエンド | `src/converter/limits.ts` | 900万画素 | 自動デプロイ |
+| Go REST API | svg-app `api/internal/` | 900万画素、エンジン待ち120秒 | svg-app側で手動デプロイ |
+| C++ gRPCサーバー | svg-app `src/engine_common.hpp` | SVG 128 MiBまで | svg-app側で手動デプロイ |
+
+上限を上げるときは、利用者に見える層が最後になるよう、ホスト側Nginx → C++ gRPCサーバー → Go REST API → フロントエンドの順に更新する。
+
 ## 4. デプロイ失敗時の確認
 
 1. GitHubリポジトリのActionsを開く。

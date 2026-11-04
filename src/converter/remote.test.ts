@@ -90,7 +90,7 @@ describe('convertRemote', () => {
 })
 
 describe('messageForStatus', () => {
-  it.each([400, 404, 413, 415, 422, 429, 500, 502, 503, 504, 418])('gives a Japanese message for %i', (status) => {
+  it.each([400, 404, 413, 415, 422, 429, 500, 502, 503, 504, 507, 418])('gives a Japanese message for %i', (status) => {
     const message = messageForStatus(status)
     expect(message).toContain(`(HTTP ${status})`)
     expect(message).toMatch(/[ぁ-んァ-ン]/)
@@ -101,5 +101,6 @@ describe('messageForStatus', () => {
     expect(messageForStatus(429)).toContain('混み合っています')
     expect(messageForStatus(503)).toContain('利用できません')
     expect(messageForStatus(504)).toContain('タイムアウト')
+    expect(messageForStatus(507)).toContain('SVG が大きくなりすぎました')
   })
 })

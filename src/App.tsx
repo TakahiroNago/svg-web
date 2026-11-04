@@ -197,7 +197,7 @@ export default function App() {
       const img = await decodeImage(file)
       if (id !== runId.current) return
       setStatus('converting')
-      const out = await convert(img.rgba, img.width, img.height, colors, boundary)
+      const out = await convert(file, img.rgba, img.width, img.height, colors, boundary)
       if (id !== runId.current) return
       const all = out.palette.filter((c) => c.area > 0)
       setPalette(all)

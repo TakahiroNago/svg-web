@@ -70,6 +70,39 @@ describe('server mode', () => {
     expect(WorkerSpy).not.toHaveBeenCalled()
   })
 
+  it('sends the original file when the API can read it as is, and re-sends the same file', async () => {
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    const original = new File(
+      [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0, 0, 0, 0])],
+      'logo.png',
+      { type: 'image/png' },
+    )
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [original] } })
+    await screen.findByAltText('変換後の SVG')
+    expect(await (sentForm(fetchMock, 0).get('file') as File).arrayBuffer()).toEqual(await original.arrayBuffer())
+
+    fireEvent.click(screen.getByRole('switch', { name: /線だけで描く/ }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(await (sentForm(fetchMock, 1).get('file') as File).arrayBuffer()).toEqual(await original.arrayBuffer())
+  })
+
+  it('falls back to the decoded pixels when the API cannot read the original', async () => {
+    const fetchMock = vi
+      .fn(async () => okResponse())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'bad' }), { status: 422 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    const original = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xda, 0, 2])], 'photo.jpg', { type: 'image/jpeg' })
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [original] } })
+
+    await screen.findByAltText('変換後の SVG')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(await (sentForm(fetchMock, 1).get('file') as File).text()).toBe('png')
+  })
+
   it('re-sends the image when 線だけで描く is switched on', async () => {
     const fetchMock = vi.fn(async () => okResponse())
     vi.stubGlobal('fetch', fetchMock)

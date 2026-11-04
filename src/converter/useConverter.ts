@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PaletteColor } from '../wasm/svg-converter.js'
 import { CONVERTER_MODE } from './config.ts'
-import { convertRemote, rgbaToPng } from './remote.ts'
+import { ConvertApiError, convertRemote } from './remote.ts'
+import { canSendOriginal, encodeForUpload } from './upload.ts'
 import type { WorkerRequest, WorkerResponse } from './worker.ts'
 
 export type EngineState = 'initializing' | 'ready' | 'failed'
@@ -20,7 +21,7 @@ export function useConverter() {
   const workerRef = useRef<Worker | null>(null)
   const pending = useRef(new Map<number, Pending>())
   const nextId = useRef(1)
-  const remoteImage = useRef<{ png: Blob; colors: number } | null>(null)
+  const remoteImage = useRef<{ image: Blob; colors: number } | null>(null)
   // Server mode has nothing to initialize; 'ready' only means the UI can send requests.
   const [engine, setEngine] = useState<EngineState>(USE_REMOTE ? 'ready' : 'initializing')
   const [engineError, setEngineError] = useState('')
@@ -73,6 +74,7 @@ export function useConverter() {
   // Analyzes the image and generates the SVG with every color that has a non-zero area.
   const convert = useCallback(
     async (
+      file: File,
       rgba: ArrayBuffer,
       width: number,
       height: number,
@@ -80,11 +82,21 @@ export function useConverter() {
       boundary: boolean,
     ): Promise<FullConvertOutput> => {
       if (USE_REMOTE) {
-        const png = await rgbaToPng(rgba, width, height)
+        const original = await canSendOriginal(file)
+        let image: Blob = original ? file : await encodeForUpload(rgba, width, height)
         // Empty kept_colors makes the engine keep every non-zero color in draw order, which is
         // exactly the selection the WASM path below makes, so one request is enough.
-        const result = await convertRemote(png, colors, [], boundary)
-        remoteImage.current = { png, colors }
+        let result: FullConvertOutput
+        try {
+          result = await convertRemote(image, colors, [], boundary)
+        } catch (e) {
+          // The browser could decode this file but the API could not: send the decoded pixels.
+          const unreadable = e instanceof ConvertApiError && (e.status === 415 || e.status === 422)
+          if (!original || !unreadable) throw e
+          image = await encodeForUpload(rgba, width, height)
+          result = await convertRemote(image, colors, [], boundary)
+        }
+        remoteImage.current = { image, colors }
         return result
       }
       const palette = await postToWorker<PaletteColor[]>(
@@ -104,7 +116,7 @@ export function useConverter() {
       if (USE_REMOTE) {
         const image = remoteImage.current
         if (!image) throw new Error('先に画像を変換してください。')
-        const { svg, contourCount } = await convertRemote(image.png, image.colors, keptColors, boundary)
+        const { svg, contourCount } = await convertRemote(image.image, image.colors, keptColors, boundary)
         return { svg, contourCount }
       }
       return postToWorker<ConvertOutput>({ type: 'generate', id: nextId.current++, keptColors, boundary })

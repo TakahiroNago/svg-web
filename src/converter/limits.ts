@@ -4,7 +4,7 @@ export const DEFAULT_COLORS = 8
 
 export const MAX_FILE_BYTES = 20 * 1024 * 1024
 export const MAX_SIDE = 4096
-export const MAX_PIXELS = 4_000_000
+export const MAX_PIXELS = 9_000_000
 
 export const ACCEPTED_TYPES = ['image/png', 'image/jpeg']
 
