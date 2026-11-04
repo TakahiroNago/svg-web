@@ -132,6 +132,14 @@ AWS EC2上にDocker環境を構築し、フロントエンドとバックエン�
 
 ### CI/CDパイプライン
 
+PRと`main`ブランチへのプッシュでは、`.github/workflows/ci.yml`がNode.js 22で次の項目を実行します。このワークフローは本番環境へデプロイせず、AWSの認証情報も使用しません。
+
+- `npm ci`による依存関係のインストール
+- `npm run lint`によるlint
+- `npx tsc -b`によるTypeScriptの型チェック
+- `npm test`によるVitestのテスト
+- WASMモード（Cloudflare Pages）とserverモード（AWS）の本番ビルド、および各ビルドの変換方式の確認
+
 GitHubの`main`ブランチへのプッシュを契機に、GitHub ActionsからAWS Systems Manager（SSM）経由でEC2上のデプロイ処理を実行します。ワークフローの手動実行にも対応しています。
 
 ```text
@@ -209,7 +217,11 @@ Web Worker上で変換処理を実行することで、UIの処理と画像変�
 
 生成したSVGはBlob URLを利用してプレビューします。SVGをHTMLのDOMとして直接挿入する方式は使用していません。
 
-サーバー変換を選択した場合は、画像データがGo REST APIへ送信され、サーバー側のC++画像変換エンジンで処理されます。
+サーバー変換を選択した場合は、画像データがGo REST APIへ送信され、サーバー側のC++画像変換エンジンで処理されます。送信前に、GPS情報、撮影日時、カメラ情報、サムネイル、コメントなどのメタデータをブラウザ側で取り除きます（`src/converter/upload.ts`）。JPEGとPNGの圧縮データはそのまま送るため、画質は変わりません。EXIFで回転する画像や解析できないファイルは、ブラウザで再エンコードして送ります。
+
+### 色の扱い
+
+ICCプロファイルを使用した色変換には対応していません。Display P3やAdobe RGBなどの画像では、元画像のプレビューと変換後のSVGで色が異なる場合があります。
 
 ## 入力制限
 
@@ -218,7 +230,7 @@ Web Worker上で変換処理を実行することで、UIの処理と画像変�
 - 対応形式：PNG、JPEG
 - 最大ファイルサイズ：20 MB
 - 画像の最大幅・高さ：各4096 px
-- 最大画素数：400万画素
+- 最大画素数：900万画素
 - 色数：2、3、4、5、6、8、12、16、24、32
 
 ## 開発環境
@@ -255,8 +267,19 @@ npm run build
 ### テスト
 
 ```powershell
+npm ci
+npm run lint
+npx tsc -b
 npm test
+
+# WASMモードの本番ビルド
+npm run build
+
+# serverモードの本番ビルド（VITE_CONVERTER_MODE=server、VITE_API_BASE_URL=""）
+node -e "require('child_process').execSync('npm run build',{stdio:'inherit',env:{...process.env,VITE_CONVERTER_MODE:'server',VITE_API_BASE_URL:''}})"
 ```
+
+CIでも同じ項目を実行します。serverモードの環境変数はビルドの子プロセスだけに渡すため、PowerShellの環境変数は変更されません（Windows PowerShell 5.1では、`$env:VITE_API_BASE_URL = ""`は空文字の設定ではなく変数の削除になります）。CIには`.env`がないため、ローカルに`.env`がある場合のWASMモードのビルドは、CIと条件が異なることがあります。
 
 Vitestで、変換方式の設定、APIエラー時の表示、各変換方式の画面表示（画像送信の有無の表示を含む）、WASMモジュールによる変換をテストします。
 

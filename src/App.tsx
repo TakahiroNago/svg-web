@@ -81,7 +81,7 @@ const keptKey = (indices: number[]) => indices.join(',')
 const countPaths = (svg: string) => svg.match(/<path\b/g)?.length ?? 0
 
 export default function App() {
-  const { mode, engine, engineError, convert, generate } = useConverter()
+  const { mode, engine, engineError, convert, generate, cancel } = useConverter()
   const [file, setFile] = useState<File | null>(null)
   const [colors, setColors] = useState<number>(DEFAULT_COLORS)
   const [boundary, setBoundary] = useState(false)
@@ -116,6 +116,7 @@ export default function App() {
       return
     }
     runId.current++
+    cancel()
     failed.current = null
     setError('')
     setStatus('idle')
@@ -125,7 +126,7 @@ export default function App() {
     setView(INITIAL_VIEW)
     setSplit(50)
     setFile(f)
-  }, [])
+  }, [cancel])
 
   const openPicker = () => fileInput.current?.click()
 
@@ -190,6 +191,7 @@ export default function App() {
   const run = useCallback(async () => {
     if (!file) return
     const id = ++runId.current
+    cancel()
     const key = attemptKey
     setError('')
     setStatus('decoding')
@@ -197,7 +199,7 @@ export default function App() {
       const img = await decodeImage(file)
       if (id !== runId.current) return
       setStatus('converting')
-      const out = await convert(img.rgba, img.width, img.height, colors, boundary)
+      const out = await convert(file, img.rgba, img.width, img.height, colors, boundary)
       if (id !== runId.current) return
       const all = out.palette.filter((c) => c.area > 0)
       setPalette(all)
@@ -218,7 +220,7 @@ export default function App() {
       setError((e as Error).message)
       setStatus('idle')
     }
-  }, [file, colors, boundary, attemptKey, convert])
+  }, [file, colors, boundary, attemptKey, convert, cancel])
 
   const regenerate = useCallback(async () => {
     if (!file || !result) return

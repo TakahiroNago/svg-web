@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PaletteColor } from '../wasm/svg-converter.js'
 import { CONVERTER_MODE } from './config.ts'
-import { convertRemote, rgbaToPng } from './remote.ts'
+import { ConvertApiError, convertRemote } from './remote.ts'
+import { encodeForUpload, stripMetadata } from './upload.ts'
 import type { WorkerRequest, WorkerResponse } from './worker.ts'
 
 export type EngineState = 'initializing' | 'ready' | 'failed'
@@ -20,10 +21,27 @@ export function useConverter() {
   const workerRef = useRef<Worker | null>(null)
   const pending = useRef(new Map<number, Pending>())
   const nextId = useRef(1)
-  const remoteImage = useRef<{ png: Blob; colors: number } | null>(null)
+  const remoteImage = useRef<{ image: Blob; colors: number } | null>(null)
+  const remoteRequest = useRef<AbortController | null>(null)
   // Server mode has nothing to initialize; 'ready' only means the UI can send requests.
   const [engine, setEngine] = useState<EngineState>(USE_REMOTE ? 'ready' : 'initializing')
   const [engineError, setEngineError] = useState('')
+
+  // Only the latest request may finish, so an older image can never replace remoteImage.
+  // The engine may keep working on an aborted request until it finishes by itself.
+  const cancel = useCallback(() => {
+    remoteRequest.current?.abort()
+    remoteRequest.current = null
+  }, [])
+
+  const beginRequest = useCallback(() => {
+    cancel()
+    const controller = new AbortController()
+    remoteRequest.current = controller
+    return controller.signal
+  }, [cancel])
+
+  useEffect(() => cancel, [cancel])
 
   useEffect(() => {
     if (USE_REMOTE) return
@@ -73,6 +91,7 @@ export function useConverter() {
   // Analyzes the image and generates the SVG with every color that has a non-zero area.
   const convert = useCallback(
     async (
+      file: File,
       rgba: ArrayBuffer,
       width: number,
       height: number,
@@ -80,11 +99,22 @@ export function useConverter() {
       boundary: boolean,
     ): Promise<FullConvertOutput> => {
       if (USE_REMOTE) {
-        const png = await rgbaToPng(rgba, width, height)
+        const signal = beginRequest()
+        const stripped = await stripMetadata(file)
+        let image = stripped ?? (await encodeForUpload(rgba, width, height))
         // Empty kept_colors makes the engine keep every non-zero color in draw order, which is
         // exactly the selection the WASM path below makes, so one request is enough.
-        const result = await convertRemote(png, colors, [], boundary)
-        remoteImage.current = { png, colors }
+        let result: FullConvertOutput
+        try {
+          result = await convertRemote(image, colors, [], boundary, signal)
+        } catch (e) {
+          // The browser could decode this file but the API could not: send the decoded pixels.
+          const unreadable = e instanceof ConvertApiError && (e.status === 415 || e.status === 422)
+          if (!stripped || !unreadable) throw e
+          image = await encodeForUpload(rgba, width, height)
+          result = await convertRemote(image, colors, [], boundary, signal)
+        }
+        remoteImage.current = { image, colors }
         return result
       }
       const palette = await postToWorker<PaletteColor[]>(
@@ -95,7 +125,7 @@ export function useConverter() {
       const out = await postToWorker<ConvertOutput>({ type: 'generate', id: nextId.current++, keptColors: kept, boundary })
       return { ...out, palette }
     },
-    [postToWorker],
+    [postToWorker, beginRequest],
   )
 
   // Regenerates the SVG of the last converted image with a different color selection.
@@ -104,13 +134,13 @@ export function useConverter() {
       if (USE_REMOTE) {
         const image = remoteImage.current
         if (!image) throw new Error('先に画像を変換してください。')
-        const { svg, contourCount } = await convertRemote(image.png, image.colors, keptColors, boundary)
+        const { svg, contourCount } = await convertRemote(image.image, image.colors, keptColors, boundary, beginRequest())
         return { svg, contourCount }
       }
       return postToWorker<ConvertOutput>({ type: 'generate', id: nextId.current++, keptColors, boundary })
     },
-    [postToWorker],
+    [postToWorker, beginRequest],
   )
 
-  return { mode: CONVERTER_MODE, engine, engineError, convert, generate }
+  return { mode: CONVERTER_MODE, engine, engineError, convert, generate, cancel }
 }

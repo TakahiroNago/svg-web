@@ -46,6 +46,8 @@ export function messageForStatus(status: number): string {
       return `変換エンジンが一時的に利用できません。しばらくしてから再度お試しください。${suffix}`
     case 504:
       return `変換がタイムアウトしました。色数を減らすか、小さい画像でお試しください。${suffix}`
+    case 507:
+      return `変換結果の SVG が大きくなりすぎました。色数を減らすか、模様の少ない画像でお試しください。${suffix}`
     default:
       return status >= 500
         ? `変換サーバーでエラーが発生しました。${suffix}`
@@ -71,26 +73,45 @@ function isRemoteResult(v: unknown): v is RemoteResult {
   )
 }
 
-export async function rgbaToPng(rgba: ArrayBuffer, width: number, height: number): Promise<Blob> {
+function rgbaToCanvas(rgba: ArrayBuffer, width: number, height: number) {
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
   const c2d = canvas.getContext('2d')
   if (!c2d) throw new Error('Canvas を利用できません。')
   c2d.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0)
+  return { canvas, c2d }
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
   return new Promise((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('画像のエンコードに失敗しました。'))), 'image/png'),
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('画像のエンコードに失敗しました。'))), type, quality),
   )
 }
 
+export async function rgbaToPng(rgba: ArrayBuffer, width: number, height: number): Promise<Blob> {
+  return canvasToBlob(rgbaToCanvas(rgba, width, height).canvas, 'image/png')
+}
+
+export async function rgbaToJpeg(rgba: ArrayBuffer, width: number, height: number): Promise<Blob> {
+  const { canvas, c2d } = rgbaToCanvas(rgba, width, height)
+  // JPEG has no alpha; the engine composites transparency over white, so do the same here.
+  c2d.globalCompositeOperation = 'destination-over'
+  c2d.fillStyle = '#fff'
+  c2d.fillRect(0, 0, width, height)
+  return canvasToBlob(canvas, 'image/jpeg', 0.95)
+}
+
 export async function convertRemote(
-  png: Blob,
+  image: Blob,
   colors: number,
   keptColors: number[],
   boundary: boolean,
+  signal?: AbortSignal,
 ): Promise<RemoteResult> {
   const form = new FormData()
-  form.set('file', png, 'image.png')
+  // The API detects the format from the content, so the name does not matter.
+  form.set('file', image, 'image')
   form.set('colors', String(colors))
   form.set('boundary', String(boundary))
   // Empty means every color with a non-zero area, in draw order.
@@ -98,16 +119,20 @@ export async function convertRemote(
 
   let res: Response
   try {
-    res = await fetch(CONVERT_ENDPOINT, { method: 'POST', body: form })
-  } catch {
+    res = await fetch(CONVERT_ENDPOINT, { method: 'POST', body: form, signal })
+  } catch (e) {
+    if (signal?.aborted) throw e
     throw new ConvertApiError(
       'network',
       '変換サーバーに接続できませんでした。ネットワーク接続を確認するか、しばらくしてから再度お試しください。',
     )
   }
+  signal?.throwIfAborted()
   if (!res.ok) throw new ConvertApiError('http', messageForStatus(res.status), res.status)
 
   const body: unknown = await res.json().catch(() => null)
+  // A response that outlived its request must never reach the caller.
+  signal?.throwIfAborted()
   if (!isRemoteResult(body)) {
     throw new ConvertApiError('invalid-response', '変換サーバーから想定外の応答を受け取りました。', res.status)
   }

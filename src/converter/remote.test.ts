@@ -70,6 +70,35 @@ describe('convertRemote', () => {
     expect(err.message).not.toMatch(/supported/)
   })
 
+  it('passes the abort signal on and reports an abort as an abort, not as a network failure', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal!.addEventListener('abort', () => reject(init.signal!.reason))
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = convertRemote(png, 8, [], false, controller.signal)
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
+  it('discards a response that arrives after the abort', async () => {
+    const controller = new AbortController()
+    let finish: (r: Response) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((r) => { finish = r })))
+
+    const pending = convertRemote(png, 8, [], false, controller.signal)
+    controller.abort()
+    finish(jsonResponse(200, ok))
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
   it('handles a non-JSON error page from Nginx', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>502 Bad Gateway</html>', { status: 502 })))
 
@@ -90,7 +119,7 @@ describe('convertRemote', () => {
 })
 
 describe('messageForStatus', () => {
-  it.each([400, 404, 413, 415, 422, 429, 500, 502, 503, 504, 418])('gives a Japanese message for %i', (status) => {
+  it.each([400, 404, 413, 415, 422, 429, 500, 502, 503, 504, 507, 418])('gives a Japanese message for %i', (status) => {
     const message = messageForStatus(status)
     expect(message).toContain(`(HTTP ${status})`)
     expect(message).toMatch(/[ぁ-んァ-ン]/)
@@ -101,5 +130,6 @@ describe('messageForStatus', () => {
     expect(messageForStatus(429)).toContain('混み合っています')
     expect(messageForStatus(503)).toContain('利用できません')
     expect(messageForStatus(504)).toContain('タイムアウト')
+    expect(messageForStatus(507)).toContain('SVG が大きくなりすぎました')
   })
 })

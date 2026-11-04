@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quality:
+    name: Lint, types, tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - name: Type check
+        run: npx tsc -b
+      - run: npm test
+      # Unset means wasm, as on Cloudflare Pages.
+      - name: Build in wasm mode
+        run: |
+          npm run build
+          test "$(grep -Po '<meta(?=[^>]*\sname=["\x27]converter-mode["\x27])[^>]*>' dist/index.html | grep -Po '\scontent=["\x27]\K[^"\x27]*')" = wasm
+      # Same values as docker-compose.yml, the AWS build.
+      - name: Build in server mode
+        env:
+          VITE_CONVERTER_MODE: server
+          VITE_API_BASE_URL: ""
+        run: |
+          npm run build
+          test "$(grep -Po '<meta(?=[^>]*\sname=["\x27]converter-mode["\x27])[^>]*>' dist/index.html | grep -Po '\scontent=["\x27]\K[^"\x27]*')" = server
