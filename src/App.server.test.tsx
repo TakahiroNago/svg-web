@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.tsx'
+import { decodeImage } from './converter/decode.ts'
 import { palette, selectImage, stubObjectUrls } from './test/app.ts'
 
 vi.mock('./converter/config.ts', () => ({ CONVERTER_MODE: 'server', API_BASE_URL: '' }))
 vi.mock('./converter/decode.ts', () => ({
-  decodeImage: vi.fn(async () => ({ rgba: new ArrayBuffer(16), width: 2, height: 2 })),
+  decodeImage: vi.fn(async () => ({ rgba: new ArrayBuffer(16), width: 2, height: 2, resizedFrom: null })),
 }))
 // jsdom cannot encode PNGs; the request itself still goes through the real convertRemote.
 vi.mock('./converter/remote.ts', async (importOriginal) => ({
@@ -135,6 +136,52 @@ describe('server mode', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(await sentBytes(fetchMock, 0)).toEqual(JPEG_WITHOUT_METADATA)
     expect(await (sentForm(fetchMock, 1).get('file') as File).text()).toBe('png')
+  })
+
+  describe('an image reduced to fit the limits', () => {
+    const reduced = { rgba: new ArrayBuffer(16), width: 2000, height: 2000, resizedFrom: { width: 3000, height: 3000 } }
+
+    it('sends the reduced pixels instead of the file, and says so', async () => {
+      const fetchMock = vi.fn(async () => okResponse())
+      vi.stubGlobal('fetch', fetchMock)
+      vi.mocked(decodeImage).mockResolvedValueOnce(reduced)
+      render(<App />)
+      choose(jpegFile('photo.jpg', exifSegment(1)))
+      await screen.findByAltText('変換後の SVG')
+
+      expect(await (sentForm(fetchMock, 0).get('file') as File).text()).toBe('png')
+      expect(screen.getByRole('status')).toHaveTextContent('3000×3000 から 2000×2000 に縮小して変換します')
+      expect(screen.getByRole('status')).toHaveTextContent('4,000,000 画素')
+
+      // Changing a setting re-sends the same reduced image, and the message stays.
+      fireEvent.click(screen.getByRole('switch', { name: /線だけで描く/ }))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      expect(await (sentForm(fetchMock, 1).get('file') as File).text()).toBe('png')
+      expect(screen.getByRole('status')).toHaveTextContent('縮小して変換します')
+    })
+
+    it('removes the message when an image within the limits is chosen', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => okResponse()))
+      vi.mocked(decodeImage).mockResolvedValueOnce(reduced)
+      render(<App />)
+      choose(jpegFile('big.jpg', []))
+      expect(await screen.findByText(/縮小して変換します/)).toBeInTheDocument()
+
+      choose(pngFile('small.png'))
+
+      await waitFor(() => expect(screen.queryByText(/縮小して変換します/)).toBeNull())
+      await screen.findByAltText('変換後の SVG')
+      expect(screen.queryByText(/縮小して変換します/)).toBeNull()
+    })
+
+    it('shows no message for an image within the limits', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => okResponse()))
+      render(<App />)
+      choose(pngFile('small.png'))
+      await screen.findByAltText('変換後の SVG')
+
+      expect(screen.queryByText(/縮小して変換します/)).toBeNull()
+    })
   })
 
   describe('when another image is chosen during a conversion', () => {

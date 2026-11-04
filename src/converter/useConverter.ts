@@ -97,10 +97,12 @@ export function useConverter() {
       height: number,
       colors: number,
       boundary: boolean,
+      resized: boolean,
     ): Promise<FullConvertOutput> => {
       if (USE_REMOTE) {
         const signal = beginRequest()
-        const stripped = await stripMetadata(file)
+        // A reduced image only exists as pixels; the file itself is over the limits.
+        const stripped = resized ? null : await stripMetadata(file)
         let image = stripped ?? (await encodeForUpload(rgba, width, height))
         // Empty kept_colors makes the engine keep every non-zero color in draw order, which is
         // exactly the selection the WASM path below makes, so one request is enough.

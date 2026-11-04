@@ -215,6 +215,10 @@ input[type='range'] {
   background: var(--err-bg);
   color: var(--err-fg);
 }
+.alert.info {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
 .hint {
   margin: 0;
   font-size: 12px;

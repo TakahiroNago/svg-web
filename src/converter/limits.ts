@@ -4,7 +4,7 @@ export const DEFAULT_COLORS = 8
 
 export const MAX_FILE_BYTES = 20 * 1024 * 1024
 export const MAX_SIDE = 4096
-export const MAX_PIXELS = 9_000_000
+export const MAX_PIXELS = 4_000_000
 
 export const ACCEPTED_TYPES = ['image/png', 'image/jpeg']
 
@@ -16,6 +16,13 @@ export function validateFile(file: File): string | null {
     return `ファイルサイズが大きすぎます(上限 ${MAX_FILE_BYTES / 1024 / 1024} MB)。`
   }
   return null
+}
+
+// The largest size with the same proportions that stays within the limits.
+export function fitWithinLimits(width: number, height: number): { width: number; height: number } {
+  const scale = Math.min(1, MAX_SIDE / Math.max(width, height), Math.sqrt(MAX_PIXELS / (width * height)))
+  if (scale >= 1) return { width, height }
+  return { width: Math.max(1, Math.floor(width * scale)), height: Math.max(1, Math.floor(height * scale)) }
 }
 
 export function validateDimensions(width: number, height: number): string | null {

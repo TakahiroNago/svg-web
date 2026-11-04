@@ -1,12 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.tsx'
+import { decodeImage } from './converter/decode.ts'
 import type { WorkerRequest, WorkerResponse } from './converter/worker.ts'
 import { palette, selectImage, stubObjectUrls } from './test/app.ts'
 
 vi.mock('./converter/config.ts', () => ({ CONVERTER_MODE: 'wasm', API_BASE_URL: '' }))
 vi.mock('./converter/decode.ts', () => ({
-  decodeImage: vi.fn(async () => ({ rgba: new ArrayBuffer(16), width: 2, height: 2 })),
+  decodeImage: vi.fn(async () => ({ rgba: new ArrayBuffer(16), width: 2, height: 2, resizedFrom: null })),
 }))
 
 // Stands in for worker.ts. The real WASM module is covered by src/wasm/svg-converter.test.ts.
@@ -75,6 +76,20 @@ describe('wasm mode', () => {
     expect(worker().received[1]).toMatchObject({ type: 'generate', keptColors: [1, 0], boundary: false })
     // One <path> per color, counted from the SVG rather than taken from the contour count.
     expect(screen.getByText('パス数').parentElement).toHaveTextContent('2')
+  })
+
+  it('converts a reduced image at its reduced size and says so', async () => {
+    vi.mocked(decodeImage).mockResolvedValueOnce({
+      rgba: new ArrayBuffer(16),
+      width: 2000,
+      height: 2000,
+      resizedFrom: { width: 3000, height: 3000 },
+    })
+
+    await loadAndConvert()
+
+    expect(worker().received[0]).toMatchObject({ type: 'analyze', width: 2000, height: 2000 })
+    expect(screen.getByRole('status')).toHaveTextContent('3000×3000 から 2000×2000 に縮小して変換します')
   })
 
   it('re-analyzes on a color count change and only regenerates on other changes', async () => {
