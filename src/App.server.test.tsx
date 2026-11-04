@@ -29,6 +29,33 @@ function sentForm(fetchMock: ReturnType<typeof vi.fn>, call: number) {
 // Longer than the settle delay after a settings change.
 const settled = () => new Promise((r) => setTimeout(r, 600))
 
+const choose = (file: File) =>
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } })
+
+const bytes = async (b: Blob) => [...new Uint8Array(await b.arrayBuffer())]
+
+const sentBytes = (fetchMock: ReturnType<typeof vi.fn>, call: number) => bytes(sentForm(fetchMock, call).get('file') as File)
+
+const IMAGE_START = [0xff, 0xd8]
+const IMAGE_BODY = [0xff, 0xc0, 0, 3, 8, 0xff, 0xda, 0, 2, 0x12, 0xff, 0xd9]
+const JPEG_WITHOUT_METADATA = [...IMAGE_START, ...IMAGE_BODY]
+
+// EXIF with an Orientation tag, followed by bytes standing in for GPS and camera data.
+function exifSegment(orientation: number) {
+  const secret = [...'GPS-35.68N-Canon'].map((c) => c.charCodeAt(0))
+  const body = [0x45, 0x78, 0x69, 0x66, 0, 0, 0x49, 0x49, 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, orientation, 0, 0, 0, 0, 0, 0, 0, ...secret]
+  return [0xff, 0xe1, 0, body.length + 2, ...body]
+}
+
+const jpegFile = (name: string, metadata: number[]) =>
+  new File([new Uint8Array([...IMAGE_START, ...metadata, ...IMAGE_BODY])], name, { type: 'image/jpeg' })
+
+const pngFile = (name: string) => {
+  const chunk = (type: string) => [0, 0, 0, 0, ...[...type].map((c) => c.charCodeAt(0)), 1, 2, 3, 4]
+  const file = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk('IHDR'), ...chunk('IDAT'), ...chunk('IEND')]
+  return new File([new Uint8Array(file)], name, { type: 'image/png' })
+}
+
 beforeEach(() => {
   stubObjectUrls()
   WorkerSpy.mockClear()
@@ -70,37 +97,120 @@ describe('server mode', () => {
     expect(WorkerSpy).not.toHaveBeenCalled()
   })
 
-  it('sends the original file when the API can read it as is, and re-sends the same file', async () => {
+  it('sends the image without its metadata, and re-sends the same bytes', async () => {
     const fetchMock = vi.fn(async () => okResponse())
     vi.stubGlobal('fetch', fetchMock)
     render(<App />)
-    const original = new File(
-      [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0, 0, 0, 0])],
-      'logo.png',
-      { type: 'image/png' },
-    )
-    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [original] } })
+    choose(jpegFile('photo.jpg', exifSegment(1)))
     await screen.findByAltText('変換後の SVG')
-    expect(await (sentForm(fetchMock, 0).get('file') as File).arrayBuffer()).toEqual(await original.arrayBuffer())
+
+    expect(await sentBytes(fetchMock, 0)).toEqual(JPEG_WITHOUT_METADATA)
+    expect((sentForm(fetchMock, 0).get('file') as File).name).toBe('image')
 
     fireEvent.click(screen.getByRole('switch', { name: /線だけで描く/ }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(await (sentForm(fetchMock, 1).get('file') as File).arrayBuffer()).toEqual(await original.arrayBuffer())
+    expect(await sentBytes(fetchMock, 1)).toEqual(JPEG_WITHOUT_METADATA)
   })
 
-  it('falls back to the decoded pixels when the API cannot read the original', async () => {
+  it('sends the decoded pixels for an image rotated by EXIF, so no metadata goes with them', async () => {
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    choose(jpegFile('photo.jpg', exifSegment(6)))
+    await screen.findByAltText('変換後の SVG')
+
+    expect(await (sentForm(fetchMock, 0).get('file') as File).text()).toBe('png')
+  })
+
+  it('falls back to the decoded pixels when the API cannot read the file', async () => {
     const fetchMock = vi
       .fn(async () => okResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'bad' }), { status: 422 }))
     vi.stubGlobal('fetch', fetchMock)
     render(<App />)
-    const original = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xda, 0, 2])], 'photo.jpg', { type: 'image/jpeg' })
-    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [original] } })
+    choose(jpegFile('photo.jpg', []))
 
     await screen.findByAltText('変換後の SVG')
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(await sentBytes(fetchMock, 0)).toEqual(JPEG_WITHOUT_METADATA)
     expect(await (sentForm(fetchMock, 1).get('file') as File).text()).toBe('png')
+  })
+
+  describe('when another image is chosen during a conversion', () => {
+    // The first request stays open until finished; `aborted` records what the browser would do.
+    function slowFirstRequest(response = '{"svg":"<svg data-from=\\"a\\"/>","contourCount":1,"palette":[]}') {
+      let finish: () => void = () => {}
+      let signal: AbortSignal | undefined
+      const fetchMock = vi.fn(async () => okResponse())
+      fetchMock.mockImplementationOnce(
+        (...args: unknown[]) =>
+          new Promise<Response>((resolve) => {
+            signal = (args[1] as RequestInit).signal ?? undefined
+            finish = () => resolve(new Response(response, { status: 200 }))
+          }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+      return { fetchMock, finish: () => finish(), aborted: () => signal?.aborted }
+    }
+
+    const A = () => jpegFile('a.jpg', [])
+    const B = () => pngFile('b.png')
+
+    it('aborts the older request', async () => {
+      const { fetchMock, aborted } = slowFirstRequest()
+      render(<App />)
+      choose(A())
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      expect(aborted()).toBe(false)
+
+      choose(B())
+
+      expect(aborted()).toBe(true)
+      await screen.findByAltText('変換後の SVG')
+    })
+
+    it('keeps the newer image when the older response still arrives', async () => {
+      const { fetchMock, finish } = slowFirstRequest()
+      render(<App />)
+      choose(A())
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      choose(B())
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      const shown = (await screen.findByAltText('変換後の SVG')).getAttribute('src')
+
+      finish()
+      await settled()
+
+      expect(screen.getByAltText('変換後の SVG').getAttribute('src')).toBe(shown)
+      expect(screen.queryByRole('alert')).toBeNull()
+
+      // A later change has to re-send B, not A.
+      fireEvent.click(screen.getByTitle('#0000ff'))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+      expect(await sentBytes(fetchMock, 2)).toEqual(await bytes(B()))
+    })
+
+    it('shows no error for the aborted request', async () => {
+      const fetchMock = vi.fn(async () => okResponse())
+      fetchMock.mockImplementationOnce(
+        (...args: unknown[]) =>
+          new Promise<Response>((_resolve, reject) => {
+            const signal = (args[1] as RequestInit).signal!
+            signal.addEventListener('abort', () => reject(signal.reason))
+          }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+      render(<App />)
+      choose(A())
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+
+      choose(B())
+
+      await screen.findByAltText('変換後の SVG')
+      await settled()
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
   })
 
   it('re-sends the image when 線だけで描く is switched on', async () => {

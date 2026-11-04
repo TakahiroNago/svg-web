@@ -107,6 +107,7 @@ export async function convertRemote(
   colors: number,
   keptColors: number[],
   boundary: boolean,
+  signal?: AbortSignal,
 ): Promise<RemoteResult> {
   const form = new FormData()
   // The API detects the format from the content, so the name does not matter.
@@ -118,16 +119,20 @@ export async function convertRemote(
 
   let res: Response
   try {
-    res = await fetch(CONVERT_ENDPOINT, { method: 'POST', body: form })
-  } catch {
+    res = await fetch(CONVERT_ENDPOINT, { method: 'POST', body: form, signal })
+  } catch (e) {
+    if (signal?.aborted) throw e
     throw new ConvertApiError(
       'network',
       '変換サーバーに接続できませんでした。ネットワーク接続を確認するか、しばらくしてから再度お試しください。',
     )
   }
+  signal?.throwIfAborted()
   if (!res.ok) throw new ConvertApiError('http', messageForStatus(res.status), res.status)
 
   const body: unknown = await res.json().catch(() => null)
+  // A response that outlived its request must never reach the caller.
+  signal?.throwIfAborted()
   if (!isRemoteResult(body)) {
     throw new ConvertApiError('invalid-response', '変換サーバーから想定外の応答を受け取りました。', res.status)
   }

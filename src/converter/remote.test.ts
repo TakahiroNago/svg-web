@@ -70,6 +70,35 @@ describe('convertRemote', () => {
     expect(err.message).not.toMatch(/supported/)
   })
 
+  it('passes the abort signal on and reports an abort as an abort, not as a network failure', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal!.addEventListener('abort', () => reject(init.signal!.reason))
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = convertRemote(png, 8, [], false, controller.signal)
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
+  it('discards a response that arrives after the abort', async () => {
+    const controller = new AbortController()
+    let finish: (r: Response) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((r) => { finish = r })))
+
+    const pending = convertRemote(png, 8, [], false, controller.signal)
+    controller.abort()
+    finish(jsonResponse(200, ok))
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
   it('handles a non-JSON error page from Nginx', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>502 Bad Gateway</html>', { status: 502 })))
 
