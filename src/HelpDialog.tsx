@@ -43,7 +43,7 @@ function Faq({ mode }: { mode: ConverterMode }) {
       <dt>どんな画像を変換できますか？</dt>
       <dd>
         PNG と JPEG です。ファイルサイズは {MAX_FILE_BYTES / 1024 / 1024} MB まで、画像の大きさは 1 辺 {MAX_SIDE}px 以下・合計{' '}
-        {MAX_PIXELS.toLocaleString()} 画素以下に対応しています。
+        {MAX_PIXELS.toLocaleString()} 画素以下に対応しています。これを超える画像は、自動で縮小して変換します。
       </dd>
       <dt>どんな画像に向いていますか？</dt>
       <dd>

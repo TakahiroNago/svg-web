@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { decodeImage } from './converter/decode.ts'
-import { COLOR_OPTIONS, DEFAULT_COLORS, MAX_FILE_BYTES, validateFile } from './converter/limits.ts'
+import { COLOR_OPTIONS, DEFAULT_COLORS, MAX_FILE_BYTES, MAX_PIXELS, validateFile } from './converter/limits.ts'
 import { useConverter } from './converter/useConverter.ts'
 import { HelpDialog, type HelpTopic } from './HelpDialog.tsx'
 import { createSampleImage } from './sample.ts'
@@ -87,6 +87,7 @@ export default function App() {
   const [boundary, setBoundary] = useState(false)
   const [status, setStatus] = useState<Status>('idle')
   const [error, setError] = useState('')
+  const [resizeNotice, setResizeNotice] = useState('')
   const [result, setResult] = useState<Result | null>(null)
   const [palette, setPalette] = useState<PaletteColor[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -119,6 +120,7 @@ export default function App() {
     cancel()
     failed.current = null
     setError('')
+    setResizeNotice('')
     setStatus('idle')
     setResult(null)
     setPalette([])
@@ -198,8 +200,14 @@ export default function App() {
     try {
       const img = await decodeImage(file)
       if (id !== runId.current) return
+      const from = img.resizedFrom
+      setResizeNotice(
+        from
+          ? `画像が上限の ${MAX_PIXELS.toLocaleString()} 画素を超えているため、${from.width}×${from.height} から ${img.width}×${img.height} に縮小して変換します。`
+          : '',
+      )
       setStatus('converting')
-      const out = await convert(file, img.rgba, img.width, img.height, colors, boundary)
+      const out = await convert(file, img.rgba, img.width, img.height, colors, boundary, !!from)
       if (id !== runId.current) return
       const all = out.palette.filter((c) => c.area > 0)
       setPalette(all)
@@ -493,6 +501,11 @@ export default function App() {
 
             {engineAlert}
             {errorAlert}
+            {resizeNotice && (
+              <p className="alert info" role="status">
+                {resizeNotice}
+              </p>
+            )}
 
             {viewMode === 'code' && result ? (
               <div className="code-view" tabIndex={0} aria-label="SVG のコード">

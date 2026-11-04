@@ -2,7 +2,7 @@ import { MAX_FILE_BYTES } from './limits.ts'
 import { rgbaToJpeg, rgbaToPng } from './remote.ts'
 
 // Decides what server mode uploads. The compressed image data of the original is preferred:
-// re-encoding a 9,000,000-pixel photo as PNG can exceed the upload limit, and as JPEG it would
+// re-encoding a large, noisy photo as PNG can exceed the upload limit, and as JPEG it would
 // lose quality. Metadata (GPS position, capture time, camera, thumbnails, comments) never leaves
 // the browser: only the parts needed to decode the image are copied, so anything unknown is
 // dropped. Files this cannot handle safely return null and go through the canvas, which writes

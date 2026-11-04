@@ -69,7 +69,7 @@ GitHub ActionsがAWSの認証情報を使用してSSMコマンドを送信する
 | --- | --- | --- | --- |
 | ホスト側Nginx | `client_max_body_size` / `proxy_read_timeout` / `proxy_send_timeout` | `21m` / `135s` 以上 / `135s` 以上 | EC2上で手動変更し `sudo nginx -t && sudo systemctl reload nginx` |
 | フロントエンドNginx | `docker/nginx.conf` | `21m` / `130s` | 自動デプロイ |
-| フロントエンド | `src/converter/limits.ts` | 900万画素 | 自動デプロイ |
+| フロントエンド | `src/converter/limits.ts` | 400万画素（超える画像はブラウザで縮小） | 自動デプロイ |
 | Go REST API（エントリーポイント `api/cmd/api/main.go`） | svg-app `api/cmd/api/main.go` | gRPC送信上限80MiB、SVGを含むgRPC受信上限160MiB、書き込みタイムアウト150秒、同時処理数 `API_MAX_CONCURRENCY`（既定2） | svg-app側で手動デプロイ |
 | Go REST API | svg-app `api/internal/imageio/decode.go`、`api/internal/httpapi/server.go` | 900万画素、ファイル20MiB、C++エンジン待ち120秒 | svg-app側で手動デプロイ |
 | C++ gRPCサーバー | svg-app `server/grpc_server.cpp`、`src/engine_common.hpp` | gRPC受信上限80MiB、SVG 128MiBまで、同時変換数 `SVG_MAX_CONCURRENCY`（既定2） | svg-app側で手動デプロイ |
