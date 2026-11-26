@@ -175,7 +175,7 @@ HTTP / HTTPS Health Checks
 4. ローカルHTTPエンドポイントと公開HTTPSエンドポイントを確認
 5. ヘルスチェックが成功した場合にデプロイ成功と判定
 
-フロントエンドのみを更新する構成とし、Go REST APIやC++ gRPCサーバーをデプロイ処理で再起動しないようにしています。
+フロントエンドのみを更新する構成とし、Go REST APIやC++ gRPCサーバーをデプロイ処理で再起動しないようにしています。Go REST APIとC++ gRPCサーバーは、[svg-app](https://github.com/TakahiroNago/svg-app) 側のGitHub Actionsが、同じくSSM経由でデプロイします。
 
 また、GitHub ActionsからEC2への操作にはSSMを利用し、デプロイ専用のAWS認証情報をGitHub Secretsで管理しています。EC2への接続にGitHub Actions用のSSH秘密鍵を使用しない構成です。
 

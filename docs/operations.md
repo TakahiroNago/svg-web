@@ -70,42 +70,41 @@ GitHub ActionsがAWSの認証情報を使用してSSMコマンドを送信する
 | ホスト側Nginx | `client_max_body_size` / `proxy_read_timeout` / `proxy_send_timeout` | `21m` / `135s` 以上 / `135s` 以上 | EC2上で手動変更し `sudo nginx -t && sudo systemctl reload nginx` |
 | フロントエンドNginx | `docker/nginx.conf` | `21m` / `130s` | 自動デプロイ |
 | フロントエンド | `src/converter/limits.ts` | 400万画素（超える画像はブラウザで縮小） | 自動デプロイ |
-| Go REST API（エントリーポイント `api/cmd/api/main.go`） | svg-app `api/cmd/api/main.go` | gRPC送信上限80MiB、SVGを含むgRPC受信上限160MiB、書き込みタイムアウト150秒、同時処理数 `API_MAX_CONCURRENCY`（既定2） | svg-app側で手動デプロイ |
-| Go REST API | svg-app `api/internal/imageio/decode.go`、`api/internal/httpapi/server.go` | 900万画素、ファイル20MiB、C++エンジン待ち120秒 | svg-app側で手動デプロイ |
-| C++ gRPCサーバー | svg-app `server/grpc_server.cpp`、`src/engine_common.hpp` | gRPC受信上限80MiB、SVG 128MiBまで、同時変換数 `SVG_MAX_CONCURRENCY`（既定2） | svg-app側で手動デプロイ |
+| Go REST API（エントリーポイント `api/cmd/api/main.go`） | svg-app `api/cmd/api/main.go` | gRPC送信上限80MiB、SVGを含むgRPC受信上限160MiB、書き込みタイムアウト150秒、同時処理数 `API_MAX_CONCURRENCY`（既定2） | svg-appの自動デプロイ |
+| Go REST API | svg-app `api/internal/imageio/decode.go`、`api/internal/httpapi/server.go` | 900万画素、ファイル20MiB、C++エンジン待ち120秒 | svg-appの自動デプロイ |
+| C++ gRPCサーバー | svg-app `server/grpc_server.cpp`、`src/engine_common.hpp` | gRPC受信上限80MiB、SVG 128MiBまで、同時変換数 `SVG_MAX_CONCURRENCY`（既定2） | svg-appの自動デプロイ |
 
 上限を上げるときは、利用者に見える層が最後になるよう、ホスト側Nginx → C++ gRPCサーバー → Go REST API → フロントエンドの順に更新する。
 
 `API_MAX_CONCURRENCY` と `SVG_MAX_CONCURRENCY` は同じ値にする。t3.small（2 vCPU・2 GiB）では2以下とする。900万画素の変換1件につき、C++エンジンで約500 MiBを使う。
 
-### C++ gRPCサーバーとGo REST APIの手動デプロイ
+### C++ gRPCサーバーとGo REST APIのデプロイ
 
-自動デプロイの対象外であり、svg-appリポジトリから手動で更新する。実行前に、svg-appの配置先（Composeプロジェクト名 `svg-app`）を確認する。
+svg-appリポジトリの `main` でCIが成功すると、svg-appのGitHub Actions（`.github/workflows/deploy.yml`）がSSM経由でEC2上の `scripts/deploy-backend.sh` を実行する。このリポジトリ（svg-web）のデプロイとは別に動く。
+
+- APIとエンジンのイメージに入るファイルに変更がないコミットでは、何も再ビルドしない。
+- 再ビルドした場合は、API（`http://127.0.0.1:8080/healthz`）を確認し、フロントエンドのNginx（`web` コンテナ）を再起動してから、`http://127.0.0.1:8081/api/healthz` と公開URLの `/api/healthz` を確認する。フロントエンドのNginxは `api` のIPアドレスを起動時に解決するため、APIコンテナを作り直した後は再起動が必要である。
+- 確認に失敗した場合は、直前のイメージ（`svg-app-api:rollback`、`svg-app-cpp-engine:rollback`）に戻し、ワークフローは失敗になる。
+- 更新中は変換APIが一時的に利用できなくなる。
+
+上限を上げる変更でsvg-appとsvg-webの両方を更新するときは、svg-appを先にマージしてデプロイの成功を確認してから、svg-webをマージする（上の「上限を上げるとき」の順序）。
+
+#### 手動で行う場合
+
+自動デプロイが使えないときは、EC2上で同じスクリプトを実行する。実行前に、svg-appの配置先（Composeプロジェクト名 `svg-app`）を確認する。
 
 ```bash
 cd <svg-appの配置先>
+PREVIOUS=$(git rev-parse HEAD)
 git fetch origin main
 git log --oneline HEAD..origin/main   # 反映されるコミットを確認する
 git switch main
 git pull --ff-only origin main
 
-docker compose build cpp-engine api
-docker compose up -d --wait --no-deps cpp-engine
-docker compose up -d --no-deps api
-curl -fsS --max-time 5 http://127.0.0.1:8080/healthz
+sudo bash scripts/deploy-backend.sh "$PREVIOUS" "$(git rev-parse HEAD)"
 ```
 
-フロントエンドのNginxは `api` のIPアドレスを起動時に解決するため、APIコンテナを作り直した後は再起動する。
-
-```bash
-cd /home/ubuntu/apps/svg-web
-docker compose restart web
-curl -fsS --max-time 5 http://127.0.0.1:8081/api/healthz
-curl -fsS --max-time 15 https://aws-svg.art-full-stack.com/api/healthz
-```
-
-更新中は変換APIが一時的に利用できなくなる。問題が起きた場合は、svg-appで直前のコミットをチェックアウトし、同じ手順で再ビルドする。
-
+特定のコミットに戻す場合は、svg-appでそのコミットをチェックアウトし、引数なしで `sudo bash scripts/deploy-backend.sh` を実行する（引数なしの場合は必ず再ビルドする）。確認が済んだら `main` に戻す。
 ## 4. デプロイ失敗時の確認
 
 1. GitHubリポジトリのActionsを開く。
